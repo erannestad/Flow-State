@@ -9,10 +9,23 @@
             margin: 20px;
             font-family: Arial, sans-serif;
         }
-        #canvas {
-            border: 1px solid #000;
-            display: block;
+        .canvas-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
             margin: 20px 0;
+            border: 1px solid #000;
+        }
+        #bgCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
         }
         .controls {
             margin: 10px 0;
@@ -36,36 +49,69 @@
     
     <div class="controls">
         <label>Flow Rate:</label>
-        <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="2">
-        <span class="value" id="flowValue">2.0</span>
+        <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="5">
+        <span class="value" id="flowValue">5.0</span>
     </div>
     
     <div class="controls">
-        <label>Slope:</label>
-        <input type="range" id="slopeSlider" min="0" max="5" step="0.1" value="1">
-        <span class="value" id="slopeValue">1.0</span>
+        <label>Particle Density:</label>
+        <input type="range" id="densitySlider" min="0" max="10" step="0.5" value="2">
+        <span class="value" id="densityValue">2.0</span>
     </div>
     
-    <canvas id="canvas" width="800" height="600"></canvas>
+    <div class="controls">
+        <label>Brush Size:</label>
+        <input type="range" id="brushSlider" min="5" max="50" step="5" value="20">
+        <span class="value" id="brushValue">20</span>
+    </div>
+    
+    <div class="controls">
+        <label>Brush Color:</label>
+        <input type="range" id="colorSlider" min="0" max="255" step="1" value="128">
+        <span class="value" id="colorValue">128</span>
+        <span style="display: inline-block; width: 30px; height: 20px; background: rgb(128,128,128); margin-left: 10px; border: 1px solid #000;" id="colorPreview"></span>
+    </div>
+    
+    <div class="canvas-container">
+        <canvas id="bgCanvas" width="800" height="600"></canvas>
+        <canvas id="canvas" width="800" height="600"></canvas>
+    </div>
     
     <script>
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
+        const bgCanvas = document.getElementById('bgCanvas');
+        const bgCtx = bgCanvas.getContext('2d');
         const flowSlider = document.getElementById('flowSlider');
-        const slopeSlider = document.getElementById('slopeSlider');
+        const densitySlider = document.getElementById('densitySlider');
+        const brushSlider = document.getElementById('brushSlider');
+        const colorSlider = document.getElementById('colorSlider');
         const flowValue = document.getElementById('flowValue');
-        const slopeValue = document.getElementById('slopeValue');
+        const densityValue = document.getElementById('densityValue');
+        const brushValue = document.getElementById('brushValue');
+        const colorValue = document.getElementById('colorValue');
+        const colorPreview = document.getElementById('colorPreview');
         
-        let flowRate = 2.0;
-        let slope = 1.0;
+        let flowRate = 5.0;
+        let particleDensity = 2.0;
+        let brushSize = 20;
+        let brushColor = 128;
+        let isDrawing = false;
         let turtles = [];
         
-        const colors = {
-            red: '#ff0000',
-            black: '#000000',
-            white: '#ffffff',
-            yellow: '#ffff00'
-        };
+        // Gradient data setup
+        let gradientImage = new Image();
+        let gradientCanvas = document.createElement('canvas');
+        let gradientCtx = gradientCanvas.getContext('2d', { willReadFrequently: true });
+        let gradientData = null;
+        let gradientLoaded = false;
+        
+        // Three discrete size classes with corresponding colors
+        const sizeClasses = [
+            { size: 2, color: '#3366FF' },   // Small - Blue
+            { size: 5, color: '#FFA500' },   // Medium - Orange
+            { size: 8, color: '#CC3366' }    // Large - Red-Purple
+        ];
         
         // Inlet and drain at 50% height (horizontally centered)
         const inletX = 50;
@@ -73,37 +119,126 @@
         const drainX = canvas.width - 50;
         const drainY = canvas.height / 2;
         
+        // Get gradient value at position (0-1, where 1 is white/high, 0 is black/low)
+        function getGradientValue(x, y) {
+            if (!gradientLoaded || !gradientData) return 0.5;
+            
+            const ix = Math.floor(Math.max(0, Math.min(x, canvas.width - 1)) / canvas.width * gradientCanvas.width);
+            const iy = Math.floor(Math.max(0, Math.min(y, canvas.height - 1)) / canvas.height * gradientCanvas.height);
+            
+            const index = (iy * gradientCanvas.width + ix) * 4;
+            const brightness = gradientData[index] / 255;
+            return brightness;
+        }
+        
+        // Initialize gradient (matches base.jpg pattern)
+        function initializeGradient() {
+            gradientCanvas.width = canvas.width;
+            gradientCanvas.height = canvas.height;
+            
+            // Create horizontal gradient (white to dark)
+            const gradient = gradientCtx.createLinearGradient(0, 0, canvas.width, 0);
+            gradient.addColorStop(0, '#ffffff');   // White on left
+            gradient.addColorStop(1, '#404040');   // Dark gray on right
+            gradientCtx.fillStyle = gradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Add darker circular area at the drain position
+            const circleX = canvas.width - 50;  // Same as drainX
+            const circleY = canvas.height / 2;   // Same as drainY
+            const circleRadius = 150;
+            
+            const radialGradient = gradientCtx.createRadialGradient(
+                circleX, circleY, 0,
+                circleX, circleY, circleRadius
+            );
+            radialGradient.addColorStop(0, '#000000');   // Black center
+            radialGradient.addColorStop(0.5, '#202020'); // Dark gray
+            radialGradient.addColorStop(1, 'transparent'); // Fade out
+            
+            gradientCtx.fillStyle = radialGradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Copy to background canvas
+            bgCtx.drawImage(gradientCanvas, 0, 0);
+            
+            // Get gradient data
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+            gradientLoaded = true;
+            console.log('Gradient initialized - static mode');
+        }
+        
+        // Initialize immediately (no image loading needed)
+        initializeGradient();
+        
+        // Draw on gradient
+        function drawOnGradient(x, y) {
+            bgCtx.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+            bgCtx.beginPath();
+            bgCtx.arc(x, y, brushSize, 0, Math.PI * 2);
+            bgCtx.fill();
+            
+            gradientCtx.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+            gradientCtx.beginPath();
+            gradientCtx.arc(x, y, brushSize, 0, Math.PI * 2);
+            gradientCtx.fill();
+            
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+        }
+        
+        // Mouse events for drawing
+        bgCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        
+        bgCanvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        
+        bgCanvas.addEventListener('mouseup', () => { isDrawing = false; });
+        bgCanvas.addEventListener('mouseleave', () => { isDrawing = false; });
+        
         class Turtle {
-            constructor(x, y, color) {
+            constructor(x, y, sizeClass) {
                 this.x = x;
                 this.y = y;
-                this.color = color;
+                this.size = sizeClass.size;
+                this.color = sizeClass.color;
                 this.vx = 0;
                 this.vy = 0;
-                this.size = 3;
             }
             
             update() {
-                // Calculate direction from inlet to drain (diagonal flow)
-                const dx = drainX - this.x;
-                const dy = drainY - this.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                if (distance > 0) {
-                    const dirX = dx / distance;
-                    const dirY = dy / distance;
+                // Calculate gradient direction (particles flow from bright to dark)
+                if (gradientLoaded) {
+                    const sampleDist = 10;
+                    const valueHere = getGradientValue(this.x, this.y);
+                    const valueRight = getGradientValue(this.x + sampleDist, this.y);
+                    const valueDown = getGradientValue(this.x, this.y + sampleDist);
+                    const valueLeft = getGradientValue(this.x - sampleDist, this.y);
+                    const valueUp = getGradientValue(this.x, this.y - sampleDist);
                     
-                    // Apply flow force in the direction of drain
-                    const flowForce = flowRate * 0.1;
-                    this.vx += dirX * flowForce;
-                    this.vy += dirY * flowForce;
+                    // Calculate gradient (flow from light to dark)
+                    const gradientX = (valueLeft - valueRight); // Positive = flow right towards darker
+                    const gradientY = (valueUp - valueDown);     // Positive = flow down towards darker
+                    
+                    // Apply gradient force (direction)
+                    const gradientStrength = flowRate * 0.3;
+                    this.vx += gradientX * gradientStrength;
+                    this.vy += gradientY * gradientStrength;
+                    
+                    // Velocity also affected by gradient value (darker = slower, brighter = faster)
+                    const velocityMultiplier = 0.5 + valueHere * 0.5; // 0.5 to 1.0
+                    this.vx *= velocityMultiplier;
+                    this.vy *= velocityMultiplier;
                 }
                 
-                // Apply slope effect (downward)
-                const slopeForce = slope * 0.05;
-                this.vy += slopeForce;
-                
-                // Add very small noise to movement direction
-                const noiseAmount = 0.02;
+                // Add small noise
+                const noiseAmount = 0.03;
                 this.vx += (Math.random() - 0.5) * noiseAmount;
                 this.vy += (Math.random() - 0.5) * noiseAmount;
                 
@@ -158,25 +293,20 @@
         
         function addTurtles() {
             // Add turtles at inlet (left side, 50% height)
-            const colorKeys = Object.keys(colors);
             for (let i = 0; i < 2; i++) {
-                const colorKey = colorKeys[Math.floor(Math.random() * colorKeys.length)];
+                // Randomly select one of the three size classes
+                const sizeClass = sizeClasses[Math.floor(Math.random() * sizeClasses.length)];
                 turtles.push(new Turtle(
                     inletX + (Math.random() - 0.5) * 20,
                     inletY + (Math.random() - 0.5) * 20,
-                    colors[colorKey]
+                    sizeClass
                 ));
             }
         }
         
         function drawTable() {
-            // Clear canvas
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw table surface at bottom (brown base)
-            ctx.fillStyle = '#8B4513'; // Brown table surface
-            ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+            // Clear canvas (transparent)
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             // Draw inlet (left side, at 50% height)
             ctx.fillStyle = '#0000ff';
@@ -204,8 +334,8 @@
                 return false;
             });
             
-            // Add new turtles based on flow rate
-            if (Math.random() < flowRate * 0.02) {
+            // Add new turtles based on particle density
+            if (Math.random() < particleDensity * 0.02) {
                 addTurtles();
             }
             
@@ -218,9 +348,20 @@
             flowValue.textContent = flowRate.toFixed(1);
         });
         
-        slopeSlider.addEventListener('input', (e) => {
-            slope = parseFloat(e.target.value);
-            slopeValue.textContent = slope.toFixed(1);
+        densitySlider.addEventListener('input', (e) => {
+            particleDensity = parseFloat(e.target.value);
+            densityValue.textContent = particleDensity.toFixed(1);
+        });
+        
+        brushSlider.addEventListener('input', (e) => {
+            brushSize = parseInt(e.target.value);
+            brushValue.textContent = brushSize;
+        });
+        
+        colorSlider.addEventListener('input', (e) => {
+            brushColor = parseInt(e.target.value);
+            colorValue.textContent = brushColor;
+            colorPreview.style.background = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
         });
         
         // Initialize
