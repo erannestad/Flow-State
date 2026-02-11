@@ -307,9 +307,14 @@
                 this.x += this.vx;
                 this.y += this.vy;
                 
-                // Apply velocity damping
-                this.vx *= velocityDamping;
-                this.vy *= velocityDamping;
+                // Apply size-based velocity damping (larger particles more resilient)
+                // Size 2 (small) -> more damping, Size 8 (large) -> less damping
+                const sizeFactor = (this.size - 2) / 6; // 0 for size 2, 1 for size 8
+                const dampingAdjustment = sizeFactor * 0.02; // 0 to 0.02 range
+                const effectiveDamping = Math.min(0.99, velocityDamping + dampingAdjustment);
+                
+                this.vx *= effectiveDamping;
+                this.vy *= effectiveDamping;
                 
                 // Boundary conditions
                 if (this.x < 0) this.x = 0;
