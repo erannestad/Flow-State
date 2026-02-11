@@ -60,6 +60,12 @@
     </div>
     
     <div class="controls">
+        <label>Velocity Damping:</label>
+        <input type="range" id="velocitySlider" min="0.9" max="0.99" step="0.01" value="0.98">
+        <span class="value" id="velocityValue">0.98</span>
+    </div>
+    
+    <div class="controls">
         <label>Brush Size:</label>
         <input type="range" id="brushSlider" min="5" max="50" step="5" value="20">
         <span class="value" id="brushValue">20</span>
@@ -102,6 +108,7 @@
         const bgCtx = bgCanvas.getContext('2d');
         const flowSlider = document.getElementById('flowSlider');
         const densitySlider = document.getElementById('densitySlider');
+        const velocitySlider = document.getElementById('velocitySlider');
         const brushSlider = document.getElementById('brushSlider');
         const colorSlider = document.getElementById('colorSlider');
         const opacitySlider = document.getElementById('opacitySlider');
@@ -109,6 +116,7 @@
         const noiseSlider = document.getElementById('noiseSlider');
         const flowValue = document.getElementById('flowValue');
         const densityValue = document.getElementById('densityValue');
+        const velocityValue = document.getElementById('velocityValue');
         const brushValue = document.getElementById('brushValue');
         const colorValue = document.getElementById('colorValue');
         const opacityValue = document.getElementById('opacityValue');
@@ -118,6 +126,7 @@
         
         let flowRate = 5.0;
         let particleDensity = 2.0;
+        let velocityDamping = 0.98;
         let brushSize = 20;
         let brushColor = 128;
         let brushOpacity = 1.0;
@@ -284,14 +293,9 @@
                     const gradientY = (valueUp - valueDown);     // Positive = flow down towards darker
                     
                     // Apply gradient force (direction)
-                    const gradientStrength = flowRate * 0.3;
+                    const gradientStrength = flowRate * 0.5;
                     this.vx += gradientX * gradientStrength;
                     this.vy += gradientY * gradientStrength;
-                    
-                    // Velocity also affected by gradient value (darker = slower, brighter = faster)
-                    const velocityMultiplier = 0.5 + valueHere * 0.5; // 0.5 to 1.0
-                    this.vx *= velocityMultiplier;
-                    this.vy *= velocityMultiplier;
                 }
                 
                 // Add small noise
@@ -303,9 +307,9 @@
                 this.x += this.vx;
                 this.y += this.vy;
                 
-                // Damping
-                this.vx *= 0.95;
-                this.vy *= 0.95;
+                // Apply velocity damping
+                this.vx *= velocityDamping;
+                this.vy *= velocityDamping;
                 
                 // Boundary conditions
                 if (this.x < 0) this.x = 0;
@@ -408,6 +412,11 @@
         densitySlider.addEventListener('input', (e) => {
             particleDensity = parseFloat(e.target.value);
             densityValue.textContent = particleDensity.toFixed(1);
+        });
+        
+        velocitySlider.addEventListener('input', (e) => {
+            velocityDamping = parseFloat(e.target.value);
+            velocityValue.textContent = velocityDamping.toFixed(2);
         });
         
         brushSlider.addEventListener('input', (e) => {
