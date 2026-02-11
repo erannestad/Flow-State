@@ -106,12 +106,14 @@
         const colorSlider = document.getElementById('colorSlider');
         const opacitySlider = document.getElementById('opacitySlider');
         const featherSlider = document.getElementById('featherSlider');
+        const noiseSlider = document.getElementById('noiseSlider');
         const flowValue = document.getElementById('flowValue');
         const densityValue = document.getElementById('densityValue');
         const brushValue = document.getElementById('brushValue');
         const colorValue = document.getElementById('colorValue');
         const opacityValue = document.getElementById('opacityValue');
         const featherValue = document.getElementById('featherValue');
+        const noiseValue = document.getElementById('noiseValue');
         const colorPreview = document.getElementById('colorPreview');
         
         let flowRate = 5.0;
@@ -120,6 +122,7 @@
         let brushColor = 128;
         let brushOpacity = 1.0;
         let brushFeather = 0.0;
+        let brushNoise = 0;
         let isDrawing = false;
         let turtles = [];
         
@@ -197,26 +200,42 @@
         
         // Draw on gradient
         function drawOnGradient(x, y) {
+            // Add noise to position and color
+            const noiseOffsetX = (Math.random() - 0.5) * brushNoise;
+            const noiseOffsetY = (Math.random() - 0.5) * brushNoise;
+            const noisyX = x + noiseOffsetX;
+            const noisyY = y + noiseOffsetY;
+            
+            const colorNoise = Math.floor((Math.random() - 0.5) * brushNoise);
+            const noisyColor = Math.max(0, Math.min(255, brushColor + colorNoise));
+            
             // Apply opacity and feather to both canvases
             [bgCtx, gradientCtx].forEach(context => {
                 context.save();
                 context.globalAlpha = brushOpacity;
                 
+                const effectiveFeather = Math.min(brushFeather, 0.99); // Cap at 0.99 to prevent issues
+                
                 if (brushFeather > 0) {
                     // Create radial gradient for feathered brush
-                    const gradient = context.createRadialGradient(x, y, 0, x, y, brushSize);
-                    gradient.addColorStop(0, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
-                    gradient.addColorStop(1 - brushFeather, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
-                    gradient.addColorStop(1, `rgba(${brushColor}, ${brushColor}, ${brushColor}, 0)`);
+                    const featherRadius = brushSize * (1 + brushFeather);
+                    const gradient = context.createRadialGradient(noisyX, noisyY, 0, noisyX, noisyY, featherRadius);
+                    gradient.addColorStop(0, `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`);
+                    const innerStop = Math.max(0, 1 - effectiveFeather);
+                    gradient.addColorStop(innerStop, `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`);
+                    gradient.addColorStop(1, `rgba(${noisyColor}, ${noisyColor}, ${noisyColor}, 0)`);
                     context.fillStyle = gradient;
+                    context.beginPath();
+                    context.arc(noisyX, noisyY, featherRadius, 0, Math.PI * 2);
+                    context.fill();
                 } else {
                     // Hard edge brush
-                    context.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+                    context.fillStyle = `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`;
+                    context.beginPath();
+                    context.arc(noisyX, noisyY, brushSize, 0, Math.PI * 2);
+                    context.fill();
                 }
                 
-                context.beginPath();
-                context.arc(x, y, brushSize, 0, Math.PI * 2);
-                context.fill();
                 context.restore();
             });
             
@@ -409,7 +428,12 @@
         
         featherSlider.addEventListener('input', (e) => {
             brushFeather = parseFloat(e.target.value);
-            featherValue.textContent = brushFeather.toFixed(2);
+            featherValue.textContent = brushFeather.toFixed(1);
+        });
+        
+        noiseSlider.addEventListener('input', (e) => {
+            brushNoise = parseInt(e.target.value);
+            noiseValue.textContent = brushNoise;
         });
         
         // Initialize
