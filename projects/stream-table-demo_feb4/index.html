@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emriver Stream Table Model</title>
+    <style>
+        body {
+            margin: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #canvas {
+            border: 1px solid #000;
+            display: block;
+            margin: 20px 0;
+        }
+        .controls {
+            margin: 10px 0;
+        }
+        label {
+            display: inline-block;
+            width: 120px;
+        }
+        input[type="range"] {
+            width: 300px;
+        }
+        .value {
+            display: inline-block;
+            width: 60px;
+            text-align: right;
+        }
+    </style>
+</head>
+<body>
+    <h1>Emriver Stream Table Model</h1>
+    
+    <div class="controls">
+        <label>Flow Rate:</label>
+        <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="2">
+        <span class="value" id="flowValue">2.0</span>
+    </div>
+    
+    <div class="controls">
+        <label>Slope:</label>
+        <input type="range" id="slopeSlider" min="0" max="5" step="0.1" value="1">
+        <span class="value" id="slopeValue">1.0</span>
+    </div>
+    
+    <canvas id="canvas" width="800" height="600"></canvas>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const flowSlider = document.getElementById('flowSlider');
+        const slopeSlider = document.getElementById('slopeSlider');
+        const flowValue = document.getElementById('flowValue');
+        const slopeValue = document.getElementById('slopeValue');
+        
+        let flowRate = 2.0;
+        let slope = 1.0;
+        let turtles = [];
+        
+        const colors = {
+            red: '#ff0000',
+            black: '#000000',
+            white: '#ffffff',
+            yellow: '#ffff00'
+        };
+        
+        // Inlet and drain at 50% height (horizontally centered)
+        const inletX = 50;
+        const inletY = canvas.height / 2;
+        const drainX = canvas.width - 50;
+        const drainY = canvas.height / 2;
+        
+        class Turtle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.vx = 0;
+                this.vy = 0;
+                this.size = 3;
+            }
+            
+            update() {
+                // Calculate direction from inlet to drain (diagonal flow)
+                const dx = drainX - this.x;
+                const dy = drainY - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance > 0) {
+                    const dirX = dx / distance;
+                    const dirY = dy / distance;
+                    
+                    // Apply flow force in the direction of drain
+                    const flowForce = flowRate * 0.1;
+                    this.vx += dirX * flowForce;
+                    this.vy += dirY * flowForce;
+                }
+                
+                // Apply slope effect (downward)
+                const slopeForce = slope * 0.05;
+                this.vy += slopeForce;
+                
+                // Add very small noise to movement direction
+                const noiseAmount = 0.02;
+                this.vx += (Math.random() - 0.5) * noiseAmount;
+                this.vy += (Math.random() - 0.5) * noiseAmount;
+                
+                // Apply velocity
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Damping
+                this.vx *= 0.95;
+                this.vy *= 0.95;
+                
+                // Boundary conditions
+                if (this.x < 0) this.x = 0;
+                if (this.x > canvas.width) this.x = canvas.width;
+                if (this.y < 0) this.y = 0;
+                
+                // Outlet/drain at right side (50% height)
+                const drainWidth = 40;
+                const drainHeight = 40;
+                if (this.x > drainX - drainWidth / 2 && 
+                    this.x < drainX + drainWidth / 2 &&
+                    this.y > drainY - drainHeight / 2 && 
+                    this.y < drainY + drainHeight / 2) {
+                    // Remove turtle (drained)
+                    return false;
+                }
+                
+                // Bottom boundary (table surface)
+                const tableSurfaceY = canvas.height - 30;
+                if (this.y > tableSurfaceY) {
+                    this.y = tableSurfaceY;
+                    this.vy *= -0.3; // Bounce with friction
+                    this.vx *= 0.8;
+                }
+                
+                // Top boundary
+                if (this.y < 0) {
+                    this.y = 0;
+                    this.vy *= -0.3;
+                }
+                
+                return true;
+            }
+            
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function addTurtles() {
+            // Add turtles at inlet (left side, 50% height)
+            const colorKeys = Object.keys(colors);
+            for (let i = 0; i < 2; i++) {
+                const colorKey = colorKeys[Math.floor(Math.random() * colorKeys.length)];
+                turtles.push(new Turtle(
+                    inletX + (Math.random() - 0.5) * 20,
+                    inletY + (Math.random() - 0.5) * 20,
+                    colors[colorKey]
+                ));
+            }
+        }
+        
+        function drawTable() {
+            // Clear canvas
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw table surface at bottom (brown base)
+            ctx.fillStyle = '#8B4513'; // Brown table surface
+            ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+            
+            // Draw inlet (left side, at 50% height)
+            ctx.fillStyle = '#0000ff';
+            ctx.fillRect(inletX - 20, inletY - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.fillText('Inlet', inletX - 15, inletY + 5);
+            
+            // Draw outlet/drain (right side, at 50% height)
+            ctx.fillStyle = '#333';
+            ctx.fillRect(drainX - 20, drainY - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('Drain', drainX - 15, drainY + 5);
+        }
+        
+        function animate() {
+            drawTable();
+            
+            // Update and draw turtles
+            turtles = turtles.filter(turtle => {
+                if (turtle.update()) {
+                    turtle.draw();
+                    return true;
+                }
+                return false;
+            });
+            
+            // Add new turtles based on flow rate
+            if (Math.random() < flowRate * 0.02) {
+                addTurtles();
+            }
+            
+            requestAnimationFrame(animate);
+        }
+        
+        // Slider event listeners
+        flowSlider.addEventListener('input', (e) => {
+            flowRate = parseFloat(e.target.value);
+            flowValue.textContent = flowRate.toFixed(1);
+        });
+        
+        slopeSlider.addEventListener('input', (e) => {
+            slope = parseFloat(e.target.value);
+            slopeValue.textContent = slope.toFixed(1);
+        });
+        
+        // Initialize
+        addTurtles();
+        animate();
+    </script>
+</body>
+</html>
