@@ -289,39 +289,55 @@
         
         // Draw on gradient
         function drawOnGradient(x, y) {
-            // Add noise to position and color
-            const noiseOffsetX = (Math.random() - 0.5) * brushNoise;
-            const noiseOffsetY = (Math.random() - 0.5) * brushNoise;
-            const noisyX = x + noiseOffsetX;
-            const noisyY = y + noiseOffsetY;
-            
-            const colorNoise = Math.floor((Math.random() - 0.5) * brushNoise);
-            const noisyColor = Math.max(0, Math.min(255, brushColor + colorNoise));
-            
             // Apply opacity and feather to both canvases
             [bgCtx, gradientCtx].forEach(context => {
                 context.save();
                 context.globalAlpha = brushOpacity;
                 
-                const effectiveFeather = Math.min(brushFeather, 0.99); // Cap at 0.99 to prevent issues
+                const effectiveFeather = Math.min(brushFeather, 0.99);
                 
+                if (brushNoise > 0) {
+                    // Draw multiple noisy spots across the brush area
+                    const numSpots = Math.max(5, Math.floor(brushSize * 2));
+                    for (let i = 0; i < numSpots; i++) {
+                        // Random position within brush radius
+                        const angle = Math.random() * Math.PI * 2;
+                        const distance = Math.random() * brushSize;
+                        const spotX = x + Math.cos(angle) * distance;
+                        const spotY = y + Math.sin(angle) * distance;
+                        
+                        // Random color variation based on noise
+                        const colorVariation = (Math.random() - 0.5) * brushNoise;
+                        const spotColor = Math.max(0, Math.min(255, brushColor + colorVariation));
+                        
+                        // Random size variation
+                        const spotSize = (brushSize / 8) * (0.5 + Math.random() * 0.5);
+                        
+                        context.fillStyle = `rgba(${spotColor}, ${spotColor}, ${spotColor}, ${brushOpacity * 0.3})`;
+                        context.beginPath();
+                        context.arc(spotX, spotY, spotSize, 0, Math.PI * 2);
+                        context.fill();
+                    }
+                }
+                
+                // Main brush stroke
                 if (brushFeather > 0) {
                     // Create radial gradient for feathered brush
                     const featherRadius = brushSize * (1 + brushFeather);
-                    const gradient = context.createRadialGradient(noisyX, noisyY, 0, noisyX, noisyY, featherRadius);
-                    gradient.addColorStop(0, `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`);
+                    const gradient = context.createRadialGradient(x, y, 0, x, y, featherRadius);
+                    gradient.addColorStop(0, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
                     const innerStop = Math.max(0, 1 - effectiveFeather);
-                    gradient.addColorStop(innerStop, `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`);
-                    gradient.addColorStop(1, `rgba(${noisyColor}, ${noisyColor}, ${noisyColor}, 0)`);
+                    gradient.addColorStop(innerStop, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
+                    gradient.addColorStop(1, `rgba(${brushColor}, ${brushColor}, ${brushColor}, 0)`);
                     context.fillStyle = gradient;
                     context.beginPath();
-                    context.arc(noisyX, noisyY, featherRadius, 0, Math.PI * 2);
+                    context.arc(x, y, featherRadius, 0, Math.PI * 2);
                     context.fill();
                 } else {
                     // Hard edge brush
-                    context.fillStyle = `rgb(${noisyColor}, ${noisyColor}, ${noisyColor})`;
+                    context.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
                     context.beginPath();
-                    context.arc(noisyX, noisyY, brushSize, 0, Math.PI * 2);
+                    context.arc(x, y, brushSize, 0, Math.PI * 2);
                     context.fill();
                 }
                 
