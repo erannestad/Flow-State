@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emriver Stream Table - Heat Map</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DIN+Round&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 20px;
+            font-family: 'DIN Round', sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        h1 {
+            font-size: 24px;
+            font-weight: 400;
+            margin-bottom: 20px;
+            letter-spacing: 0.02em;
+        }
+        
+        .control-group {
+            margin-bottom: 20px;
+        }
+        
+        .control-group h2 {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #666;
+        }
+        
+        .canvas-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            background: #fff;
+        }
+        
+        #bgCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin: 8px 0;
+            font-size: 13px;
+        }
+        
+        label {
+            min-width: 120px;
+            font-weight: 400;
+        }
+        
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 200px;
+            height: 2px;
+            background: #ddd;
+            outline: none;
+            border: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #333;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            background: #333;
+            cursor: pointer;
+            border-radius: 50%;
+            border: none;
+        }
+        
+        .value {
+            min-width: 40px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        #colorPreview {
+            display: inline-block;
+            width: 30px;
+            height: 20px;
+            border: 1px solid #ddd;
+        }
+        
+        button {
+            padding: 8px 16px;
+            background: #333;
+            color: #fff;
+            border: none;
+            font-family: 'DIN Round', sans-serif;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>Emriver Stream Table - Heat Map</h1>
+    
+    <div class="control-group">
+        <h2>Simulation</h2>
+        <div class="controls">
+            <label>Flow Rate:</label>
+            <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="5">
+            <span class="value" id="flowValue">5.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Particle Density:</label>
+            <input type="range" id="densitySlider" min="0" max="10" step="0.5" value="2">
+            <span class="value" id="densityValue">2.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Velocity Damping:</label>
+            <input type="range" id="velocitySlider" min="0.9" max="0.99" step="0.01" value="0.98">
+            <span class="value" id="velocityValue">0.98</span>
+        </div>
+        
+        <button id="clearButton">Clear Heat Map</button>
+    </div>
+    
+    <div class="control-group">
+        <h2>Brush</h2>
+        <div class="controls">
+            <label>Brush Size:</label>
+            <input type="range" id="brushSlider" min="5" max="50" step="5" value="20">
+            <span class="value" id="brushValue">20</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush Color:</label>
+            <input type="range" id="colorSlider" min="0" max="255" step="1" value="128">
+            <span class="value" id="colorValue">128</span>
+            <span id="colorPreview" style="background: rgb(128,128,128);"></span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush Opacity:</label>
+            <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="1">
+            <span class="value" id="opacityValue">1.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush Feather:</label>
+            <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="0">
+            <span class="value" id="featherValue">0.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush Noise:</label>
+            <input type="range" id="noiseSlider" min="0" max="50" step="1" value="0">
+            <span class="value" id="noiseValue">0</span>
+        </div>
+    </div>
+    
+    <div class="canvas-container">
+        <canvas id="bgCanvas" width="800" height="600"></canvas>
+        <canvas id="canvas" width="800" height="600"></canvas>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const bgCanvas = document.getElementById('bgCanvas');
+        const bgCtx = bgCanvas.getContext('2d');
+        const flowSlider = document.getElementById('flowSlider');
+        const densitySlider = document.getElementById('densitySlider');
+        const velocitySlider = document.getElementById('velocitySlider');
+        const brushSlider = document.getElementById('brushSlider');
+        const colorSlider = document.getElementById('colorSlider');
+        const opacitySlider = document.getElementById('opacitySlider');
+        const featherSlider = document.getElementById('featherSlider');
+        const noiseSlider = document.getElementById('noiseSlider');
+        const clearButton = document.getElementById('clearButton');
+        const flowValue = document.getElementById('flowValue');
+        const densityValue = document.getElementById('densityValue');
+        const velocityValue = document.getElementById('velocityValue');
+        const brushValue = document.getElementById('brushValue');
+        const colorValue = document.getElementById('colorValue');
+        const opacityValue = document.getElementById('opacityValue');
+        const featherValue = document.getElementById('featherValue');
+        const noiseValue = document.getElementById('noiseValue');
+        const colorPreview = document.getElementById('colorPreview');
+        
+        let flowRate = 5.0;
+        let particleDensity = 2.0;
+        let velocityDamping = 0.98;
+        let brushSize = 20;
+        let brushColor = 128;
+        let brushOpacity = 1.0;
+        let brushFeather = 0.0;
+        let brushNoise = 0;
+        let isDrawing = false;
+        let particles = [];
+        
+        // Heat map grid setup
+        const cellSize = 5;
+        const gridWidth = Math.floor(canvas.width / cellSize);
+        const gridHeight = Math.floor(canvas.height / cellSize);
+        let heatMapGrid = [];
+        let maxCount = 1;
+        
+        // Decay settings (30 seconds = 1800 frames at 60fps)
+        const decayFrames = 1800; // 30 seconds
+        const decayRate = 1 / decayFrames; // Amount to decay each frame
+        
+        // Gradient data setup
+        let gradientCanvas = document.createElement('canvas');
+        let gradientCtx = gradientCanvas.getContext('2d', { willReadFrequently: true });
+        let gradientData = null;
+        let gradientLoaded = false;
+        
+        // Three discrete size classes with corresponding colors
+        const sizeClasses = [
+            { size: 2, color: '#3366FF' },   // Small - Blue
+            { size: 5, color: '#FFA500' },   // Medium - Orange
+            { size: 8, color: '#CC3366' }    // Large - Red-Purple
+        ];
+        
+        // Inlet and drain
+        const inletX = 50;
+        const inletY = canvas.height / 2;
+        const drainX = canvas.width - 50;
+        const drainY = canvas.height / 2;
+        
+        // Convert pixel coordinates to grid coordinates
+        function pixelToGrid(x, y) {
+            return {
+                col: Math.floor(x / cellSize),
+                row: Math.floor(y / cellSize)
+            };
+        }
+        
+        // Convert grid coordinates to pixel coordinates (center of cell)
+        function gridToPixel(col, row) {
+            return {
+                x: col * cellSize + cellSize / 2,
+                y: row * cellSize + cellSize / 2
+            };
+        }
+        
+        // Initialize heat map grid
+        function initializeGrid() {
+            heatMapGrid = [];
+            maxCount = 1;
+            for (let row = 0; row < gridHeight; row++) {
+                heatMapGrid[row] = [];
+                for (let col = 0; col < gridWidth; col++) {
+                    heatMapGrid[row][col] = 0; // Just store count
+                }
+            }
+        }
+        
+        initializeGrid();
+        
+        // Get color for cell based on cumulative count
+        function getCellColor(count) {
+            if (count === 0) return null;
+            
+            // Logarithmic scaling for better visibility of low counts
+            const logCount = Math.log(count + 1);
+            const logMax = Math.log(maxCount + 1);
+            const normalized = Math.min(logCount / logMax, 1);
+            const intensity = Math.pow(normalized, 0.6);
+            
+            // Heat map: blue (low) -> cyan -> green -> yellow -> red (high)
+            let r, g, b;
+            if (intensity < 0.25) {
+                // Blue to Cyan
+                const t = intensity / 0.25;
+                r = 0;
+                g = Math.floor(t * 255);
+                b = 255;
+            } else if (intensity < 0.5) {
+                // Cyan to Green
+                const t = (intensity - 0.25) / 0.25;
+                r = 0;
+                g = 255;
+                b = Math.floor((1 - t) * 255);
+            } else if (intensity < 0.75) {
+                // Green to Yellow
+                const t = (intensity - 0.5) / 0.25;
+                r = Math.floor(t * 255);
+                g = 255;
+                b = 0;
+            } else {
+                // Yellow to Red
+                const t = (intensity - 0.75) / 0.25;
+                r = 255;
+                g = Math.floor((1 - t) * 255);
+                b = 0;
+            }
+            
+            return `rgba(${r}, ${g}, ${b}, 0.9)`;
+        }
+        
+        // Get gradient value at position
+        function getGradientValue(x, y) {
+            if (!gradientLoaded || !gradientData) return 0.5;
+            
+            const ix = Math.floor(Math.max(0, Math.min(x, canvas.width - 1)) / canvas.width * gradientCanvas.width);
+            const iy = Math.floor(Math.max(0, Math.min(y, canvas.height - 1)) / canvas.height * gradientCanvas.height);
+            
+            const index = (iy * gradientCanvas.width + ix) * 4;
+            const brightness = gradientData[index] / 255;
+            return brightness;
+        }
+        
+        // Initialize gradient
+        function initializeGradient() {
+            gradientCanvas.width = canvas.width;
+            gradientCanvas.height = canvas.height;
+            
+            // Create horizontal gradient (white to dark)
+            const gradient = gradientCtx.createLinearGradient(0, 0, canvas.width, 0);
+            gradient.addColorStop(0, '#ffffff');
+            gradient.addColorStop(1, '#404040');
+            gradientCtx.fillStyle = gradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Add darker circular area at drain
+            const circleX = canvas.width - 50;
+            const circleY = canvas.height / 2;
+            const circleRadius = 150;
+            
+            const radialGradient = gradientCtx.createRadialGradient(
+                circleX, circleY, 0,
+                circleX, circleY, circleRadius
+            );
+            radialGradient.addColorStop(0, '#000000');
+            radialGradient.addColorStop(0.5, '#202020');
+            radialGradient.addColorStop(1, 'transparent');
+            
+            gradientCtx.fillStyle = radialGradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Copy to background canvas
+            bgCtx.drawImage(gradientCanvas, 0, 0);
+            
+            // Get gradient data
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+            gradientLoaded = true;
+        }
+        
+        initializeGradient();
+        
+        // Draw on gradient
+        function drawOnGradient(x, y) {
+            [bgCtx, gradientCtx].forEach(context => {
+                context.save();
+                context.globalAlpha = brushOpacity;
+                
+                const effectiveFeather = Math.min(brushFeather, 0.99);
+                
+                if (brushNoise > 0) {
+                    const numSpots = Math.max(5, Math.floor(brushSize * 2));
+                    for (let i = 0; i < numSpots; i++) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const distance = Math.random() * brushSize;
+                        const spotX = x + Math.cos(angle) * distance;
+                        const spotY = y + Math.sin(angle) * distance;
+                        
+                        const colorVariation = (Math.random() - 0.5) * brushNoise;
+                        const spotColor = Math.max(0, Math.min(255, brushColor + colorVariation));
+                        
+                        const spotSize = (brushSize / 8) * (0.5 + Math.random() * 0.5);
+                        
+                        context.fillStyle = `rgba(${spotColor}, ${spotColor}, ${spotColor}, ${brushOpacity * 0.3})`;
+                        context.beginPath();
+                        context.arc(spotX, spotY, spotSize, 0, Math.PI * 2);
+                        context.fill();
+                    }
+                }
+                
+                if (brushFeather > 0) {
+                    const featherRadius = brushSize * (1 + brushFeather);
+                    const gradient = context.createRadialGradient(x, y, 0, x, y, featherRadius);
+                    gradient.addColorStop(0, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
+                    const innerStop = Math.max(0, 1 - effectiveFeather);
+                    gradient.addColorStop(innerStop, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
+                    gradient.addColorStop(1, `rgba(${brushColor}, ${brushColor}, ${brushColor}, 0)`);
+                    context.fillStyle = gradient;
+                    context.beginPath();
+                    context.arc(x, y, featherRadius, 0, Math.PI * 2);
+                    context.fill();
+                } else {
+                    context.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+                    context.beginPath();
+                    context.arc(x, y, brushSize, 0, Math.PI * 2);
+                    context.fill();
+                }
+                
+                context.restore();
+            });
+            
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+        }
+        
+        // Mouse events for drawing
+        bgCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        
+        bgCanvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        
+        bgCanvas.addEventListener('mouseup', () => { isDrawing = false; });
+        bgCanvas.addEventListener('mouseleave', () => { isDrawing = false; });
+        
+        class Particle {
+            constructor(x, y, sizeClass) {
+                this.x = x;
+                this.y = y;
+                this.size = sizeClass.size;
+                this.color = sizeClass.color;
+                this.sizeClass = sizeClass;
+                this.vx = 0;
+                this.vy = 0;
+            }
+            
+            update() {
+                // Track particle position in heat map
+                const gridPos = pixelToGrid(this.x, this.y);
+                if (gridPos.row >= 0 && gridPos.row < gridHeight && gridPos.col >= 0 && gridPos.col < gridWidth) {
+                    // Increment by a value that balances with decay
+                    heatMapGrid[gridPos.row][gridPos.col] += 2;
+                    if (heatMapGrid[gridPos.row][gridPos.col] > maxCount) {
+                        maxCount = heatMapGrid[gridPos.row][gridPos.col];
+                    }
+                }
+                
+                // Calculate gradient direction (particles flow from bright to dark)
+                if (gradientLoaded) {
+                    const sampleDist = 10;
+                    const valueHere = getGradientValue(this.x, this.y);
+                    const valueRight = getGradientValue(this.x + sampleDist, this.y);
+                    const valueDown = getGradientValue(this.x, this.y + sampleDist);
+                    const valueLeft = getGradientValue(this.x - sampleDist, this.y);
+                    const valueUp = getGradientValue(this.x, this.y - sampleDist);
+                    
+                    // Calculate gradient (flow from light to dark)
+                    const gradientX = (valueLeft - valueRight);
+                    const gradientY = (valueUp - valueDown);
+                    
+                    // Apply gradient force (direction)
+                    const gradientStrength = flowRate * 0.5;
+                    this.vx += gradientX * gradientStrength;
+                    this.vy += gradientY * gradientStrength;
+                }
+                
+                // Add small noise
+                const noiseAmount = 0.03;
+                this.vx += (Math.random() - 0.5) * noiseAmount;
+                this.vy += (Math.random() - 0.5) * noiseAmount;
+                
+                // Apply velocity
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // Apply size-based velocity damping (larger particles more resilient)
+                const sizeFactor = (this.size - 2) / 6;
+                const dampingAdjustment = sizeFactor * 0.02;
+                const effectiveDamping = Math.min(0.99, velocityDamping + dampingAdjustment);
+                
+                this.vx *= effectiveDamping;
+                this.vy *= effectiveDamping;
+                
+                // Boundary conditions
+                if (this.x < 0) this.x = 0;
+                if (this.x > canvas.width) this.x = canvas.width;
+                if (this.y < 0) this.y = 0;
+                
+                // Outlet/drain at right side
+                const drainWidth = 40;
+                const drainHeight = 40;
+                if (this.x > drainX - drainWidth / 2 && 
+                    this.x < drainX + drainWidth / 2 &&
+                    this.y > drainY - drainHeight / 2 && 
+                    this.y < drainY + drainHeight / 2) {
+                    return false; // Remove particle (drained)
+                }
+                
+                // Bottom boundary (table surface)
+                const tableSurfaceY = canvas.height - 30;
+                if (this.y > tableSurfaceY) {
+                    this.y = tableSurfaceY;
+                    this.vy *= -0.3;
+                    this.vx *= 0.8;
+                }
+                
+                // Top boundary
+                if (this.y < 0) {
+                    this.y = 0;
+                    this.vy *= -0.3;
+                }
+                
+                return true;
+            }
+            
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        // Add particles
+        function addParticles() {
+            for (let i = 0; i < 2; i++) {
+                const sizeClass = sizeClasses[Math.floor(Math.random() * sizeClasses.length)];
+                const particle = new Particle(
+                    inletX + (Math.random() - 0.5) * 20,
+                    inletY + (Math.random() - 0.5) * 20,
+                    sizeClass
+                );
+                particles.push(particle);
+            }
+        }
+        
+        // Draw heat map
+        function drawHeatMap() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw heat map cells
+            for (let row = 0; row < gridHeight; row++) {
+                for (let col = 0; col < gridWidth; col++) {
+                    const count = heatMapGrid[row][col];
+                    const color = getCellColor(count);
+                    
+                    if (color) {
+                        ctx.fillStyle = color;
+                        ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+            
+            // Draw inlet
+            ctx.fillStyle = '#0000ff';
+            ctx.fillRect(inletX - 20, inletY - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.fillText('Inlet', inletX - 15, inletY + 5);
+            
+            // Draw drain
+            ctx.fillStyle = '#333';
+            ctx.fillRect(drainX - 20, drainY - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('Drain', drainX - 15, drainY + 5);
+        }
+        
+        function animate() {
+            // Apply decay to heat map
+            maxCount = 1;
+            for (let row = 0; row < gridHeight; row++) {
+                for (let col = 0; col < gridWidth; col++) {
+                    if (heatMapGrid[row][col] > 0) {
+                        heatMapGrid[row][col] -= decayRate;
+                        if (heatMapGrid[row][col] < 0) {
+                            heatMapGrid[row][col] = 0;
+                        }
+                        if (heatMapGrid[row][col] > maxCount) {
+                            maxCount = heatMapGrid[row][col];
+                        }
+                    }
+                }
+            }
+            
+            // Draw heat map
+            drawHeatMap();
+            
+            // Update and draw particles
+            particles = particles.filter(particle => {
+                if (particle.update()) {
+                    particle.draw();
+                    return true;
+                }
+                return false;
+            });
+            
+            // Add new particles based on particle density
+            if (Math.random() < particleDensity * 0.02) {
+                addParticles();
+            }
+            
+            requestAnimationFrame(animate);
+        }
+        
+        // Slider event listeners
+        flowSlider.addEventListener('input', (e) => {
+            flowRate = parseFloat(e.target.value);
+            flowValue.textContent = flowRate.toFixed(1);
+        });
+        
+        densitySlider.addEventListener('input', (e) => {
+            particleDensity = parseFloat(e.target.value);
+            densityValue.textContent = particleDensity.toFixed(1);
+        });
+        
+        velocitySlider.addEventListener('input', (e) => {
+            velocityDamping = parseFloat(e.target.value);
+            velocityValue.textContent = velocityDamping.toFixed(2);
+        });
+        
+        brushSlider.addEventListener('input', (e) => {
+            brushSize = parseInt(e.target.value);
+            brushValue.textContent = brushSize;
+        });
+        
+        colorSlider.addEventListener('input', (e) => {
+            brushColor = parseInt(e.target.value);
+            colorValue.textContent = brushColor;
+            colorPreview.style.background = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+        });
+        
+        opacitySlider.addEventListener('input', (e) => {
+            brushOpacity = parseFloat(e.target.value);
+            opacityValue.textContent = brushOpacity.toFixed(2);
+        });
+        
+        featherSlider.addEventListener('input', (e) => {
+            brushFeather = parseFloat(e.target.value);
+            featherValue.textContent = brushFeather.toFixed(1);
+        });
+        
+        noiseSlider.addEventListener('input', (e) => {
+            brushNoise = parseInt(e.target.value);
+            noiseValue.textContent = brushNoise;
+        });
+        
+        clearButton.addEventListener('click', () => {
+            initializeGrid();
+        });
+        
+        // Initialize
+        addParticles();
+        animate();
+    </script>
+</body>
+</html>
