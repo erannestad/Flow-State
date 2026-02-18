@@ -141,8 +141,8 @@
         <h2>Simulation</h2>
         <div class="controls">
             <label>Flow Rate:</label>
-            <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="5">
-            <span class="value" id="flowValue">5.0</span>
+            <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="1">
+            <span class="value" id="flowValue">1.0</span>
         </div>
         
         <div class="controls">
@@ -170,9 +170,9 @@
         
         <div class="controls">
             <label>Brush Color:</label>
-            <input type="range" id="colorSlider" min="0" max="255" step="1" value="128">
-            <span class="value" id="colorValue">128</span>
-            <span id="colorPreview" style="background: rgb(128,128,128);"></span>
+            <input type="range" id="colorSlider" min="0" max="255" step="1" value="255">
+            <span class="value" id="colorValue">255</span>
+            <span id="colorPreview" style="background: rgb(255,255,255);"></span>
         </div>
         
         <div class="controls">
@@ -183,8 +183,8 @@
         
         <div class="controls">
             <label>Brush Feather:</label>
-            <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="0">
-            <span class="value" id="featherValue">0.0</span>
+            <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="1.5">
+            <span class="value" id="featherValue">1.5</span>
         </div>
         
         <div class="controls">
@@ -223,13 +223,13 @@
         const noiseValue = document.getElementById('noiseValue');
         const colorPreview = document.getElementById('colorPreview');
         
-        let flowRate = 5.0;
+        let flowRate = 1.0;
         let particleDensity = 2.0;
         let velocityDamping = 0.98;
         let brushSize = 20;
-        let brushColor = 128;
+        let brushColor = 255;
         let brushOpacity = 1.0;
-        let brushFeather = 0.0;
+        let brushFeather = 1.5;
         let brushNoise = 0;
         let isDrawing = false;
         let particles = [];
@@ -615,10 +615,10 @@
             // Draw heat map
             drawHeatMap();
             
-            // Update and draw particles
+            // Update particles (but don't draw them)
             particles = particles.filter(particle => {
                 if (particle.update()) {
-                    particle.draw();
+                    // particle.draw(); // Hidden - only heat map visible
                     return true;
                 }
                 return false;
