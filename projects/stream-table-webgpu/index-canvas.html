@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Table Flow — Canvas (no shaders)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DIN+Round&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { margin: 20px; font-family: 'DIN Round', sans-serif; background: #1a1a1a; color: #e0e0e0; }
+        h1 { font-size: 24px; font-weight: 400; margin-bottom: 20px; letter-spacing: 0.02em; }
+        .control-group { margin-bottom: 20px; }
+        .control-group h2 { font-size: 14px; font-weight: 500; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
+        .canvas-container { position: relative; width: 800px; height: 600px; margin: 20px 0; border: 1px solid #333; background: #111; overflow: hidden; }
+        .canvas-container canvas { position: absolute; top: 0; left: 0; }
+        #bgCanvas { z-index: 0; }
+        #canvas { z-index: 1; pointer-events: none; }
+        .controls { display: flex; align-items: center; gap: 15px; margin: 8px 0; font-size: 13px; }
+        label { min-width: 120px; font-weight: 400; }
+        input[type="range"] { -webkit-appearance: none; appearance: none; width: 200px; height: 2px; background: #444; outline: none; border: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: #0af; cursor: pointer; border-radius: 50%; }
+        input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; background: #0af; cursor: pointer; border-radius: 50%; border: none; }
+        .value { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+        #colorPreview { display: inline-block; width: 30px; height: 20px; border: 1px solid #444; }
+        button { padding: 8px 16px; background: #333; color: #fff; border: none; font-family: inherit; font-size: 13px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #555; }
+        .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+    </style>
+</head>
+<body>
+    <h1>Stream Table Flow Model — Canvas (no shaders)</h1>
+    <div class="row">
+        <div>
+            <div class="control-group">
+                <h2>Simulation</h2>
+                <div class="controls">
+                    <label>Flow Rate:</label>
+                    <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="5">
+                    <span class="value" id="flowValue">5.0</span>
+                </div>
+                <div class="controls">
+                    <label>Particle Density:</label>
+                    <input type="range" id="densitySlider" min="0" max="10" step="0.5" value="2">
+                    <span class="value" id="densityValue">2.0</span>
+                </div>
+                <div class="controls">
+                    <label>Velocity Damping:</label>
+                    <input type="range" id="velocitySlider" min="0.9" max="0.99" step="0.01" value="0.98">
+                    <span class="value" id="velocityValue">0.98</span>
+                </div>
+                <div class="controls">
+                    <label>Show Heat Map:</label>
+                    <input type="checkbox" id="heatMapCheck">
+                </div>
+                <button id="resetGradient">Reset Terrain</button>
+            </div>
+            <div class="control-group">
+                <h2>Brush</h2>
+                <div class="controls">
+                    <label>Brush Size:</label>
+                    <input type="range" id="brushSlider" min="5" max="50" step="5" value="20">
+                    <span class="value" id="brushValue">20</span>
+                </div>
+                <div class="controls">
+                    <label>Brush Color:</label>
+                    <input type="range" id="colorSlider" min="0" max="255" step="1" value="128">
+                    <span class="value" id="colorValue">128</span>
+                    <span id="colorPreview" style="background: rgb(128,128,128);"></span>
+                </div>
+                <div class="controls">
+                    <label>Brush Opacity:</label>
+                    <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="1">
+                    <span class="value" id="opacityValue">1.0</span>
+                </div>
+                <div class="controls">
+                    <label>Brush Feather:</label>
+                    <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="0">
+                    <span class="value" id="featherValue">0.0</span>
+                </div>
+            </div>
+        </div>
+        <div class="canvas-container">
+            <canvas id="bgCanvas" width="800" height="600"></canvas>
+            <canvas id="canvas" width="800" height="600"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const W = 800, H = 600;
+        const INLET_X = 50, INLET_Y = H / 2, DRAIN_X = W - 50, DRAIN_Y = H / 2;
+        const DRAIN_W = 40, DRAIN_H = 40;
+        const TABLE_SURFACE_Y = H - 30;
+        const SAMPLE_DIST = 10;
+        const HEAT_CELL = 5;
+        const HEAT_GRID_W = Math.floor(W / HEAT_CELL);
+        const HEAT_GRID_H = Math.floor(H / HEAT_CELL);
+        const HEAT_DECAY_FRAMES = 30 * 60;
+        const HEAT_DECAY_RATE = 1 / HEAT_DECAY_FRAMES;
+
+        const SIZE_CLASSES = [
+            { size: 2, color: '#3366FF' },
+            { size: 5, color: '#FFA500' },
+            { size: 8, color: '#CC3366' }
+        ];
+
+        const bgCanvas = document.getElementById('bgCanvas');
+        const canvas = document.getElementById('canvas');
+        const bgCtx = bgCanvas.getContext('2d');
+        const ctx = canvas.getContext('2d');
+
+        const gradientCanvas = document.createElement('canvas');
+        const gradientCtx = gradientCanvas.getContext('2d', { willReadFrequently: true });
+        let gradientData = null;
+        let gradientLoaded = false;
+
+        let flowRate = 5.0;
+        let particleDensity = 2.0;
+        let velocityDamping = 0.98;
+        let brushSize = 20;
+        let brushColor = 128;
+        let brushOpacity = 1.0;
+        let brushFeather = 0;
+        let showHeatMap = false;
+        let isDrawing = false;
+        let turtles = [];
+
+        let heatGrid = [];
+        let heatMax = 1;
+
+        function initHeatGrid() {
+            heatGrid = [];
+            heatMax = 1;
+            for (let r = 0; r < HEAT_GRID_H; r++) {
+                heatGrid[r] = [];
+                for (let c = 0; c < HEAT_GRID_W; c++) heatGrid[r][c] = 0;
+            }
+        }
+        initHeatGrid();
+
+        function getGradientValue(x, y) {
+            if (!gradientLoaded || !gradientData) return 0.5;
+            const ix = Math.max(0, Math.min(Math.floor(x), W - 1));
+            const iy = Math.max(0, Math.min(Math.floor(y), H - 1));
+            const i = (iy * W + ix) * 4;
+            return gradientData[i] / 255;
+        }
+
+        function initGradient() {
+            gradientCanvas.width = W;
+            gradientCanvas.height = H;
+            const g = gradientCtx.createLinearGradient(0, 0, W, 0);
+            g.addColorStop(0, '#ffffff');
+            g.addColorStop(1, '#404040');
+            gradientCtx.fillStyle = g;
+            gradientCtx.fillRect(0, 0, W, H);
+            const radial = gradientCtx.createRadialGradient(DRAIN_X, DRAIN_Y, 0, DRAIN_X, DRAIN_Y, 150);
+            radial.addColorStop(0, '#000000');
+            radial.addColorStop(0.5, '#202020');
+            radial.addColorStop(1, 'transparent');
+            gradientCtx.fillStyle = radial;
+            gradientCtx.fillRect(0, 0, W, H);
+            bgCtx.drawImage(gradientCanvas, 0, 0);
+            gradientData = gradientCtx.getImageData(0, 0, W, H).data;
+            gradientLoaded = true;
+        }
+        initGradient();
+
+        function drawOnGradient(x, y) {
+            const feath = Math.min(brushFeather, 0.99);
+            [bgCtx, gradientCtx].forEach(context => {
+                context.save();
+                context.globalAlpha = brushOpacity;
+                if (brushFeather > 0) {
+                    const r = brushSize * (1 + brushFeather);
+                    const grad = context.createRadialGradient(x, y, 0, x, y, r);
+                    grad.addColorStop(0, `rgb(${brushColor},${brushColor},${brushColor})`);
+                    grad.addColorStop(Math.max(0, 1 - feath), `rgb(${brushColor},${brushColor},${brushColor})`);
+                    grad.addColorStop(1, 'rgba(128,128,128,0)');
+                    context.fillStyle = grad;
+                    context.beginPath();
+                    context.arc(x, y, r, 0, Math.PI * 2);
+                    context.fill();
+                } else {
+                    context.fillStyle = `rgb(${brushColor},${brushColor},${brushColor})`;
+                    context.beginPath();
+                    context.arc(x, y, brushSize, 0, Math.PI * 2);
+                    context.fill();
+                }
+                context.restore();
+            });
+            gradientData = gradientCtx.getImageData(0, 0, W, H).data;
+        }
+
+        function toCanvasCoords(e) {
+            const rect = bgCanvas.getBoundingClientRect();
+            const scaleX = W / rect.width;
+            const scaleY = H / rect.height;
+            return {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY
+            };
+        }
+        bgCanvas.addEventListener('mousedown', (e) => { isDrawing = true; const p = toCanvasCoords(e); drawOnGradient(p.x, p.y); });
+        bgCanvas.addEventListener('mousemove', (e) => { if (!isDrawing) return; const p = toCanvasCoords(e); drawOnGradient(p.x, p.y); });
+        bgCanvas.addEventListener('mouseup', () => { isDrawing = false; });
+        bgCanvas.addEventListener('mouseleave', () => { isDrawing = false; });
+
+        class Turtle {
+            constructor(x, y, sizeClass) {
+                this.x = x;
+                this.y = y;
+                this.size = sizeClass.size;
+                this.color = sizeClass.color;
+                this.vx = 0;
+                this.vy = 0;
+            }
+            update() {
+                if (gradientLoaded) {
+                    const vl = getGradientValue(this.x - SAMPLE_DIST, this.y);
+                    const vr = getGradientValue(this.x + SAMPLE_DIST, this.y);
+                    const vu = getGradientValue(this.x, this.y - SAMPLE_DIST);
+                    const vd = getGradientValue(this.x, this.y + SAMPLE_DIST);
+                    const gx = vl - vr;
+                    const gy = vu - vd;
+                    const strength = flowRate * 0.5;
+                    this.vx += gx * strength;
+                    this.vy += gy * strength;
+                }
+                this.vx += (Math.random() - 0.5) * 0.03;
+                this.vy += (Math.random() - 0.5) * 0.03;
+                this.x += this.vx;
+                this.y += this.vy;
+                const sizeFactor = (this.size - 2) / 6;
+                const damp = Math.min(0.99, velocityDamping + sizeFactor * 0.02);
+                this.vx *= damp;
+                this.vy *= damp;
+                if (this.x < 0) this.x = 0;
+                if (this.x > W) this.x = W;
+                if (this.y < 0) { this.y = 0; this.vy *= -0.3; }
+                if (this.x >= DRAIN_X - DRAIN_W/2 && this.x <= DRAIN_X + DRAIN_W/2 &&
+                    this.y >= DRAIN_Y - DRAIN_H/2 && this.y <= DRAIN_Y + DRAIN_H/2) return false;
+                if (this.y > TABLE_SURFACE_Y) {
+                    this.y = TABLE_SURFACE_Y;
+                    this.vy *= -0.3;
+                    this.vx *= 0.8;
+                }
+                return true;
+            }
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function addTurtles() {
+            for (let i = 0; i < 2; i++) {
+                const sc = SIZE_CLASSES[Math.floor(Math.random() * 3)];
+                turtles.push(new Turtle(INLET_X + (Math.random() - 0.5) * 20, INLET_Y + (Math.random() - 0.5) * 20, sc));
+            }
+        }
+
+        function heatColor(count) {
+            if (count <= 0) return null;
+            const logC = Math.log(count + 1);
+            const logM = Math.log(heatMax + 1);
+            const n = Math.min(logC / logM, 1);
+            const t = Math.pow(n, 0.6);
+            let r, g, b;
+            if (t < 0.25) { r = 0; g = t / 0.25; b = 1; }
+            else if (t < 0.5) { r = 0; g = 1; b = 1 - (t - 0.25) / 0.25; }
+            else if (t < 0.75) { r = (t - 0.5) / 0.25; g = 1; b = 0; }
+            else { r = 1; g = 1 - (t - 0.75) / 0.25; b = 0; }
+            return `rgba(${Math.floor(r*255)},${Math.floor(g*255)},${Math.floor(b*255)},0.9)`;
+        }
+
+        function drawHeatMap() {
+            for (let r = 0; r < HEAT_GRID_H; r++) {
+                for (let c = 0; c < HEAT_GRID_W; c++) {
+                    const col = heatColor(heatGrid[r][c]);
+                    if (col) {
+                        ctx.fillStyle = col;
+                        ctx.fillRect(c * HEAT_CELL, r * HEAT_CELL, HEAT_CELL, HEAT_CELL);
+                    }
+                }
+            }
+        }
+
+        function drawUI() {
+            ctx.fillStyle = '#0066ff';
+            ctx.fillRect(INLET_X - 20, INLET_Y - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px sans-serif';
+            ctx.fillText('Inlet', INLET_X - 15, INLET_Y + 5);
+            ctx.fillStyle = '#333';
+            ctx.fillRect(DRAIN_X - 20, DRAIN_Y - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('Drain', DRAIN_X - 15, DRAIN_Y + 5);
+        }
+
+        function animate() {
+            if (showHeatMap) {
+                heatMax = 1;
+                for (let r = 0; r < HEAT_GRID_H; r++) {
+                    for (let c = 0; c < HEAT_GRID_W; c++) {
+                        if (heatGrid[r][c] > 0) {
+                            heatGrid[r][c] = Math.max(0, heatGrid[r][c] - HEAT_DECAY_RATE);
+                            if (heatGrid[r][c] > heatMax) heatMax = heatGrid[r][c];
+                        }
+                    }
+                }
+            }
+
+            ctx.clearRect(0, 0, W, H);
+
+            turtles = turtles.filter(t => {
+                if (showHeatMap) {
+                    const cr = Math.floor(t.y / HEAT_CELL);
+                    const cc = Math.floor(t.x / HEAT_CELL);
+                    if (cr >= 0 && cr < HEAT_GRID_H && cc >= 0 && cc < HEAT_GRID_W) {
+                        heatGrid[cr][cc] += 2;
+                        if (heatGrid[cr][cc] > heatMax) heatMax = heatGrid[cr][cc];
+                    }
+                }
+                if (!t.update()) return false;
+                if (!showHeatMap) t.draw();
+                return true;
+            });
+
+            if (showHeatMap) drawHeatMap();
+            drawUI();
+
+            if (Math.random() < particleDensity * 0.02) addTurtles();
+            requestAnimationFrame(animate);
+        }
+
+        document.getElementById('flowSlider').oninput = (e) => { flowRate = parseFloat(e.target.value); document.getElementById('flowValue').textContent = flowRate.toFixed(1); };
+        document.getElementById('densitySlider').oninput = (e) => { particleDensity = parseFloat(e.target.value); document.getElementById('densityValue').textContent = particleDensity.toFixed(1); };
+        document.getElementById('velocitySlider').oninput = (e) => { velocityDamping = parseFloat(e.target.value); document.getElementById('velocityValue').textContent = velocityDamping.toFixed(2); };
+        document.getElementById('heatMapCheck').onchange = (e) => { showHeatMap = e.target.checked; };
+        document.getElementById('resetGradient').onclick = () => { initGradient(); };
+        document.getElementById('brushSlider').oninput = (e) => { brushSize = parseInt(e.target.value); document.getElementById('brushValue').textContent = brushSize; };
+        document.getElementById('colorSlider').oninput = (e) => {
+            brushColor = parseInt(e.target.value);
+            document.getElementById('colorValue').textContent = brushColor;
+            document.getElementById('colorPreview').style.background = `rgb(${brushColor},${brushColor},${brushColor})`;
+        };
+        document.getElementById('opacitySlider').oninput = (e) => { brushOpacity = parseFloat(e.target.value); document.getElementById('opacityValue').textContent = brushOpacity.toFixed(2); };
+        document.getElementById('featherSlider').oninput = (e) => { brushFeather = parseFloat(e.target.value); document.getElementById('featherValue').textContent = brushFeather.toFixed(1); };
+
+        addTurtles();
+        animate();
+    </script>
+</body>
+</html>

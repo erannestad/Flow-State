@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Table Flow — WebGPU</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DIN+Round&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { margin: 20px; font-family: 'DIN Round', sans-serif; background: #1a1a1a; color: #e0e0e0; }
+        h1 { font-size: 24px; font-weight: 400; margin-bottom: 20px; letter-spacing: 0.02em; }
+        .control-group { margin-bottom: 20px; }
+        .control-group h2 { font-size: 14px; font-weight: 500; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
+        .canvas-container { position: relative; width: 800px; height: 600px; margin: 20px 0; border: 1px solid #333; background: #111; overflow: hidden; }
+        #canvas { display: block; width: 800px; height: 600px; }
+        .controls { display: flex; align-items: center; gap: 15px; margin: 8px 0; font-size: 13px; }
+        label { min-width: 120px; font-weight: 400; }
+        input[type="range"] { -webkit-appearance: none; appearance: none; width: 200px; height: 2px; background: #444; outline: none; border: none; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: #0af; cursor: pointer; border-radius: 50%; }
+        input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; background: #0af; cursor: pointer; border-radius: 50%; border: none; }
+        .value { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+        #colorPreview { display: inline-block; width: 30px; height: 20px; border: 1px solid #444; }
+        button { padding: 8px 16px; background: #333; color: #fff; border: none; font-family: inherit; font-size: 13px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #555; }
+        .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+    </style>
+</head>
+<body>
+    <h1>Stream Table Flow Model — WebGPU</h1>
+    <div class="row">
+        <div>
+            <div class="control-group">
+                <h2>Simulation</h2>
+                <div class="controls">
+                    <label>Flow Rate:</label>
+                    <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="5">
+                    <span class="value" id="flowValue">5.0</span>
+                </div>
+                <div class="controls">
+                    <label>Particle Density:</label>
+                    <input type="range" id="densitySlider" min="0" max="10" step="0.5" value="2">
+                    <span class="value" id="densityValue">2.0</span>
+                </div>
+                <div class="controls">
+                    <label>Velocity Damping:</label>
+                    <input type="range" id="velocitySlider" min="0.9" max="0.99" step="0.01" value="0.98">
+                    <span class="value" id="velocityValue">0.98</span>
+                </div>
+                <div class="controls">
+                    <label>Show Heat Map:</label>
+                    <input type="checkbox" id="heatMapCheck" checked>
+                </div>
+                <button id="resetGradient">Reset Terrain</button>
+            </div>
+            <div class="control-group">
+                <h2>Brush</h2>
+                <div class="controls">
+                    <label>Brush Size:</label>
+                    <input type="range" id="brushSlider" min="5" max="50" step="5" value="20">
+                    <span class="value" id="brushValue">20</span>
+                </div>
+                <div class="controls">
+                    <label>Brush Color:</label>
+                    <input type="range" id="colorSlider" min="0" max="255" step="1" value="128">
+                    <span class="value" id="colorValue">128</span>
+                    <span id="colorPreview" style="background: rgb(128,128,128);"></span>
+                </div>
+                <div class="controls">
+                    <label>Brush Opacity:</label>
+                    <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="1">
+                    <span class="value" id="opacityValue">1.0</span>
+                </div>
+                <div class="controls">
+                    <label>Brush Feather:</label>
+                    <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="0">
+                    <span class="value" id="featherValue">0.0</span>
+                </div>
+            </div>
+        </div>
+        <div class="canvas-container">
+            <canvas id="canvas" width="800" height="600"></canvas>
+        </div>
+    </div>
+
+    <script type="module">
+        const W = 800, H = 600;
+        const INLET_X = 50, INLET_Y = H / 2, DRAIN_X = W - 50, DRAIN_Y = H / 2;
+        const DRAIN_W = 40, DRAIN_H = 40;
+        const TABLE_SURFACE_Y = H - 30;
+        const SAMPLE_DIST = 10;
+        const MAX_PARTICLES = 16384;
+        const HEAT_GRID_W = Math.floor(W / 4), HEAT_GRID_H = Math.floor(H / 4);
+        const HEAT_DECAY = 1 / (30 * 60); // ~30 sec at 60fps
+
+        const SIZE_CLASSES = [
+            { size: 2, color: [0.2, 0.4, 1.0, 1.0] },   // blue
+            { size: 5, color: [1.0, 0.65, 0.0, 1.0] },  // orange
+            { size: 8, color: [0.8, 0.2, 0.4, 1.0] }   // red-purple
+        ];
+
+        const canvas = document.getElementById('canvas');
+        let device, context, format, pipelineInitGradient, pipelineBrushCompute, pipelineParticleCompute;
+        let pipelineParticleRender, pipelineDrawGradient, pipelineHeatDecay, pipelineHeatAccum, pipelineHeatRender;
+        let sampler;
+        let gradientTexture, gradientView, gradientDisplayTexture;
+        let particleBuffers = [null, null];
+        let particleSwap = 0;
+        let uniformBuffer, uniformBufferHeat, resolutionBuffer;
+        let heatTexture, heatTextureView, heatReadBuffer;
+        let bindGroupParticleCompute0, bindGroupParticleCompute1;
+        let bindGroupParticleRender0, bindGroupParticleRender1;
+        let vertexBufferQuad;
+        let run = true;
+        let frameCount = 0;
+
+        let params = {
+            flowRate: 5.0,
+            particleDensity: 2.0,
+            velocityDamping: 0.98,
+            brushSize: 20,
+            brushColor: 128,
+            brushOpacity: 1.0,
+            brushFeather: 0,
+            showHeatMap: true
+        };
+
+        const PARTICLE_STRIDE = 32; // pos.xy, vel.xy, size, type, pad x2
+
+        const wgsl = {
+            initGradient: `
+                struct VertexOutput { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+                @vertex fn vs(@location(0) pos: vec2f) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.pos = vec4f(pos, 0.0, 1.0);
+                    out.uv = pos * 0.5 + 0.5;
+                    return out;
+                }
+                @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+                    let drainCenter = vec2f(${(DRAIN_X / W).toFixed(6)}, ${(DRAIN_Y / H).toFixed(6)});
+                    let toDrain = uv - drainCenter;
+                    let dist = length(toDrain);
+                    let circleRadius = ${(150 / W).toFixed(6)};
+                    let linear = 1.0 - uv.x;
+                    let dark = 1.0 - smoothstep(0.0, circleRadius, dist);
+                    let v = linear * (1.0 - dark * 0.8) + dark * 0.1;
+                    return vec4f(v, v, v, 1.0);
+                }
+            `,
+            brushCompute: `
+                @group(0) @binding(0) var gradient: texture_storage_2d<r8unorm, read_write>;
+                struct Params { brushPos: vec2f, brushSize: f32, brushValue: f32, opacity: f32, feather: f32 }
+                @group(0) @binding(1) var<uniform> p: Params;
+                @compute @workgroup_size(8, 8)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let px = vec2i(i32(gid.x), i32(gid.y));
+                    if (px.x >= ${W} || px.y >= ${H}) { return; }
+                    let uv = (vec2f(f32(px.x), f32(px.y)) + 0.5) / vec2f(${W}.0, ${H}.0);
+                    let d = length(uv - p.brushPos);
+                    let r = p.brushSize / ${W}.0;
+                    let alpha = p.opacity * (1.0 - smoothstep(r * (1.0 - p.feather * 0.3), r, d));
+                    let current = textureLoad(gradient, px).r;
+                    let newVal = mix(current, p.brushValue / 255.0, alpha);
+                    textureStore(gradient, px, vec4f(newVal, 0.0, 0.0, 1.0));
+                }
+            `,
+            particleCompute: `
+                @group(0) @binding(0) var gradient: texture_storage_2d<r8unorm, read>;
+                @group(0) @binding(1) var<storage, read> particlesIn: array<Particle>;
+                @group(0) @binding(2) var<storage, read_write> particlesOut: array<Particle>;
+                @group(0) @binding(3) var<uniform> u: SimUniforms;
+                struct Particle { pos: vec2f, vel: vec2f, size: f32, type: u32 }
+                struct SimUniforms {
+                    resolution: vec2f,
+                    flowStrength: f32,
+                    damping: f32,
+                    inlet: vec2f,
+                    drainCenter: vec2f,
+                    drainHalf: vec2f,
+                    tableSurfaceY: f32,
+                    timeSeed: u32,
+                    sampleDistPixels: f32
+                }
+                fn hash2(u: vec2u) -> vec2f {
+                    var v = u;
+                    v = (v ^ (v >> 16u)) * 0x85ebca6bu;
+                    v = (v ^ (v >> 13u)) * 0xc2b2ae35u;
+                    v = v ^ (v >> 16u);
+                    return vec2f(f32(v.x) / 4294967295.0, f32(v.y) / 4294967295.0);
+                }
+                fn sampleGrad(px: vec2i) -> f32 {
+                    let dims = vec2i(${W}, ${H});
+                    let c = clamp(px, vec2i(0), dims - 1);
+                    return textureLoad(gradient, c).r;
+                }
+                @compute @workgroup_size(64)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let i = gid.x;
+                    if (i >= u32(${MAX_PARTICLES})) { return; }
+                    var p = particlesIn[i];
+                    let px = vec2i(i32(p.pos.x), i32(p.pos.y));
+                    let sd = i32(u.sampleDistPixels);
+                    let left = sampleGrad(px - vec2i(sd, 0));
+                    let right = sampleGrad(px + vec2i(sd, 0));
+                    let up = sampleGrad(px - vec2i(0, sd));
+                    let down = sampleGrad(px + vec2i(0, sd));
+                    let gx = left - right;
+                    let gy = up - down;
+                    let strength = u.flowStrength;
+                    p.vel.x += gx * strength;
+                    p.vel.y += gy * strength;
+                    let rnd = hash2(vec2u(u.timeSeed + i * 7u, i * 31u));
+                    p.vel.x += (rnd.x - 0.5) * 0.03;
+                    p.vel.y += (rnd.y - 0.5) * 0.03;
+                    p.pos += p.vel;
+                    let sizeFactor = (p.size - 2.0) / 6.0;
+                    let dampAdj = sizeFactor * 0.02;
+                    let damp = min(0.99, u.damping + dampAdj);
+                    p.vel *= damp;
+                    if (p.pos.x < 0.0) { p.pos.x = 0.0; }
+                    if (p.pos.x >= u.resolution.x) { p.pos.x = u.resolution.x - 1.0; }
+                    if (p.pos.y < 0.0) { p.pos.y = 0.0; p.vel.y *= -0.3; }
+                    let inDrain = p.pos.x >= u.drainCenter.x - u.drainHalf.x && p.pos.x <= u.drainCenter.x + u.drainHalf.x
+                        && p.pos.y >= u.drainCenter.y - u.drainHalf.y && p.pos.y <= u.drainCenter.y + u.drainHalf.y;
+                    if (inDrain) {
+                        p.pos = u.inlet + (rnd - 0.5) * 20.0;
+                        p.vel = vec2f(0.0, 0.0);
+                        p.type = (u.timeSeed + i) % 3u;
+                        p.size = select(select(2.0, 5.0, p.type == 1u), 8.0, p.type == 2u);
+                    }
+                    if (p.pos.y >= u.tableSurfaceY) {
+                        p.pos.y = u.tableSurfaceY;
+                        p.vel.y *= -0.3;
+                        p.vel.x *= 0.8;
+                    }
+                    particlesOut[i] = p;
+                }
+            `,
+            particleRender: `
+                struct Particle { pos: vec2f, vel: vec2f, size: f32, type: u32 }
+                @group(0) @binding(0) var<storage, read> particles: array<Particle>;
+                @group(0) @binding(1) var<uniform> u: vec2f;
+                struct VertexOutput { @builtin(position) pos: vec4f, @location(0) color: vec4f }
+                @vertex fn vs(@location(0) quadPos: vec2f, @builtin(instance_index) ii: u32) -> VertexOutput {
+                    let p = particles[ii];
+                    let off = quadPos * max(1.0, p.size);
+                    let ndc = (p.pos + off) / u * 2.0 - 1.0;
+                    let colors = array<vec4f>(
+                        vec4f(0.2, 0.4, 1.0, 1.0),
+                        vec4f(1.0, 0.65, 0.0, 1.0),
+                        vec4f(0.8, 0.2, 0.4, 1.0)
+                    );
+                    var out: VertexOutput;
+                    out.pos = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
+                    out.color = colors[p.type];
+                    return out;
+                }
+                @fragment fn fs(@location(0) color: vec4f) -> @location(0) vec4f {
+                    return color;
+                }
+            `,
+            heatDecay: `
+                @group(0) @binding(0) var heatMap: texture_storage_2d<r32float, read_write>;
+                @group(0) @binding(1) var<uniform> u: vec2f;
+                @compute @workgroup_size(8, 8)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let dims = textureDimensions(heatMap);
+                    if (gid.x >= dims.x || gid.y >= dims.y) { return; }
+                    let v = textureLoad(heatMap, vec2i(gid.xy)).r;
+                    let decay = 1.0 - ${HEAT_DECAY.toFixed(6)};
+                    textureStore(heatMap, vec2i(gid.xy), vec4f(max(0.0, v * decay), 0.0, 0.0, 1.0));
+                }
+            `,
+            heatAccum: `
+                struct Particle { pos: vec2f, vel: vec2f, size: f32, type: u32 }
+                @group(0) @binding(0) var<storage, read> particles: array<Particle>;
+                @group(0) @binding(1) var heatMap: texture_storage_2d<r32float, read_write>;
+                @group(0) @binding(2) var<uniform> res: vec2f;
+                @compute @workgroup_size(64)
+                fn main(@builtin(global_invocation_id) gid: vec3u) {
+                    let i = gid.x;
+                    if (i >= u32(${MAX_PARTICLES})) { return; }
+                    let p = particles[i];
+                    let gx = u32(p.pos.x / res.x * ${HEAT_GRID_W}.0);
+                    let gy = u32(p.pos.y / res.y * ${HEAT_GRID_H}.0);
+                    if (gx < ${HEAT_GRID_W}u && gy < ${HEAT_GRID_H}u) {
+                        let prev = textureLoad(heatMap, vec2i(i32(gx), i32(gy))).r;
+                        textureStore(heatMap, vec2i(i32(gx), i32(gy)), vec4f(prev + 2.0, 0.0, 0.0, 1.0));
+                    }
+                }
+            `,
+            heatRender: `
+                @group(0) @binding(0) var heatMap: texture_2d<f32>;
+                @group(0) @binding(1) var<uniform> maxVal: f32;
+                struct VertexOutput { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+                @vertex fn vs(@location(0) pos: vec2f) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.pos = vec4f(pos, 0.0, 1.0);
+                    out.uv = pos * 0.5 + 0.5;
+                    return out;
+                }
+                @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+                    let v = textureSample(heatMap, heatMap, uv).r;
+                    if (v <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
+                    let logV = log(v + 1.0);
+                    let logMax = log(maxVal + 1.0);
+                    let n = min(logV / logMax, 1.0);
+                    let intensity = pow(n, 0.6);
+                    var r: f32; var g: f32; var b: f32;
+                    if (intensity < 0.25) {
+                        let t = intensity / 0.25;
+                        r = 0.0; g = t; b = 1.0;
+                    } else if (intensity < 0.5) {
+                        let t = (intensity - 0.25) / 0.25;
+                        r = 0.0; g = 1.0; b = 1.0 - t;
+                    } else if (intensity < 0.75) {
+                        let t = (intensity - 0.5) / 0.25;
+                        r = t; g = 1.0; b = 0.0;
+                    } else {
+                        let t = (intensity - 0.75) / 0.25;
+                        r = 1.0; g = 1.0 - t; b = 0.0;
+                    }
+                    return vec4f(r, g, b, 0.85);
+                }
+            `,
+            fullscreenCopy: `
+                @group(0) @binding(0) var tex: texture_2d<f32>;
+                struct VertexOutput { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+                @vertex fn vs(@location(0) pos: vec2f) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.pos = vec4f(pos, 0.0, 1.0);
+                    out.uv = pos * 0.5 + 0.5;
+                    return out;
+                }
+                @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+                    return textureSample(tex, tex, uv);
+                }
+            `
+        };
+
+        function createBuffer(data, usage) {
+            const buf = device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true });
+            new data.constructor(buf.getMappedRange()).set(data);
+            buf.unmap();
+            return buf;
+        }
+
+        async function init() {
+            const adapter = await navigator.gpu?.requestAdapter();
+            if (!adapter) { document.body.innerHTML = '<p>WebGPU not supported.</p>'; return; }
+            device = await adapter.requestDevice();
+            context = canvas.getContext('webgpu');
+            format = navigator.gpu.getPreferredCanvasFormat();
+            context.configure({ device, format, alphaMode: 'premultiplied' });
+
+            gradientTexture = device.createTexture({
+                size: [W, H, 1],
+                format: 'r8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC
+            });
+            gradientView = gradientTexture.createView();
+            gradientDisplayTexture = device.createTexture({
+                size: [W, H, 1],
+                format: 'r8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+            });
+
+            pipelineInitGradient = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: device.createShaderModule({ code: wgsl.initGradient }), entryPoint: 'vs' },
+                fragment: { module: device.createShaderModule({ code: wgsl.initGradient }), entryPoint: 'fs', targets: [{ format: 'r8unorm' }] },
+                primitive: { topology: 'triangle-strip' }
+            });
+
+            const brushComputeModule = device.createShaderModule({ code: wgsl.brushCompute });
+            pipelineBrushCompute = device.createComputePipeline({
+                layout: 'auto',
+                compute: { module: brushComputeModule, entryPoint: 'main' }
+            });
+            sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+            const drawGradModule = device.createShaderModule({
+                code: `
+                    @group(0) @binding(0) var grad: texture_2d<f32>;
+                    @group(0) @binding(1) var s: sampler;
+                    struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
+                    @vertex fn vs(@location(0) pos: vec2f) -> VOut {
+                        var o: VOut;
+                        o.pos = vec4f(pos, 0.0, 1.0);
+                        o.uv = pos * 0.5 + 0.5;
+                        return o;
+                    }
+                    @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+                        let v = textureSample(grad, s, uv).r;
+                        let brightness = max(v, 0.15);
+                        return vec4f(brightness * 0.6 + 0.25, brightness * 0.6 + 0.25, brightness * 0.5 + 0.35, 1.0);
+                    }
+                `
+            });
+            pipelineDrawGradient = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: drawGradModule, entryPoint: 'vs' },
+                fragment: { module: drawGradModule, entryPoint: 'fs', targets: [{ format }] },
+                primitive: { topology: 'triangle-strip' }
+            });
+
+            const particleData = new ArrayBuffer(MAX_PARTICLES * PARTICLE_STRIDE);
+            const f32 = new Float32Array(particleData);
+            const u32 = new Uint32Array(particleData);
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                const base = i * (PARTICLE_STRIDE / 4);
+                f32[base + 0] = INLET_X + (Math.random() - 0.5) * 20;
+                f32[base + 1] = INLET_Y + (Math.random() - 0.5) * 20;
+                f32[base + 2] = 0;
+                f32[base + 3] = 0;
+                f32[base + 4] = SIZE_CLASSES[i % 3].size;
+                u32[base * 4 / 4 + 5] = i % 3;
+            }
+            particleBuffers[0] = createBuffer(new Uint8Array(particleData), GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST);
+            particleBuffers[1] = device.createBuffer({ size: particleData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+            const uniformData = new ArrayBuffer(64);
+            const uniformF32 = new Float32Array(uniformData);
+            uniformF32[0] = W; uniformF32[1] = H;
+            uniformF32[2] = params.flowRate * 0.5; uniformF32[3] = params.velocityDamping;
+            uniformF32[4] = INLET_X; uniformF32[5] = INLET_Y;
+            uniformF32[6] = DRAIN_X; uniformF32[7] = DRAIN_Y;
+            uniformF32[8] = DRAIN_W / 2; uniformF32[9] = DRAIN_H / 2;
+            uniformF32[10] = TABLE_SURFACE_Y; uniformF32[11] = 0;
+            uniformF32[12] = SAMPLE_DIST;
+            uniformBuffer = createBuffer(new Uint8Array(uniformData), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+            resolutionBuffer = createBuffer(new Float32Array([W, H]), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+
+            const particleComputeModule = device.createShaderModule({ code: wgsl.particleCompute });
+            pipelineParticleCompute = device.createComputePipeline({
+                layout: 'auto',
+                compute: { module: particleComputeModule, entryPoint: 'main' }
+            });
+
+            vertexBufferQuad = createBuffer(new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), GPUBufferUsage.VERTEX);
+
+            const particleRenderModule = device.createShaderModule({ code: wgsl.particleRender });
+            pipelineParticleRender = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module: particleRenderModule,
+                    entryPoint: 'vs',
+                    buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }]
+                },
+                fragment: { module: particleRenderModule, entryPoint: 'fs', targets: [{ format }] },
+                primitive: { topology: 'triangle-strip' }
+            });
+
+            heatTexture = device.createTexture({
+                size: [HEAT_GRID_W, HEAT_GRID_H, 1],
+                format: 'r32float',
+                usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+            });
+            heatTextureView = heatTexture.createView();
+            uniformBufferHeat = device.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+            const heatDecayModule = device.createShaderModule({ code: wgsl.heatDecay });
+            pipelineHeatDecay = device.createComputePipeline({
+                layout: 'auto',
+                compute: { module: heatDecayModule, entryPoint: 'main' }
+            });
+
+            const heatAccumModule = device.createShaderModule({ code: wgsl.heatAccum });
+            pipelineHeatAccum = device.createComputePipeline({
+                layout: 'auto',
+                compute: { module: heatAccumModule, entryPoint: 'main' }
+            });
+
+            const heatRenderModule = device.createShaderModule({ code: wgsl.heatRender });
+            const heatSamplerTexture = device.createTexture({
+                size: [HEAT_GRID_W, HEAT_GRID_H, 1],
+                format: 'r32float',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC
+            });
+            pipelineHeatRender = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: { module: heatRenderModule, entryPoint: 'vs' },
+                fragment: { module: heatRenderModule, entryPoint: 'fs', targets: [{ format }] },
+                primitive: { topology: 'triangle-strip' }
+            });
+
+            initGradientPass();
+            updateBindGroups();
+            wireControls();
+            requestAnimationFrame(loop);
+        }
+
+        function initGradientPass() {
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: gradientView,
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    clearValue: [0.5, 0, 0, 1]
+                }]
+            });
+            pass.setPipeline(pipelineInitGradient);
+            pass.setVertexBuffer(0, vertexBufferQuad);
+            pass.draw(4);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        }
+
+        function updateBindGroups() {
+            const readIdx = particleSwap;
+            const writeIdx = 1 - particleSwap;
+            const gradientForCompute = gradientTexture.createView();
+            bindGroupParticleCompute0 = device.createBindGroup({
+                layout: pipelineParticleCompute.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: gradientForCompute },
+                    { binding: 1, resource: { buffer: particleBuffers[readIdx] } },
+                    { binding: 2, resource: { buffer: particleBuffers[writeIdx] } },
+                    { binding: 3, resource: { buffer: uniformBuffer } }
+                ]
+            });
+            bindGroupParticleCompute1 = device.createBindGroup({
+                layout: pipelineParticleCompute.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: gradientForCompute },
+                    { binding: 1, resource: { buffer: particleBuffers[writeIdx] } },
+                    { binding: 2, resource: { buffer: particleBuffers[readIdx] } },
+                    { binding: 3, resource: { buffer: uniformBuffer } }
+                ]
+            });
+            bindGroupParticleRender0 = device.createBindGroup({
+                layout: pipelineParticleRender.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: particleBuffers[writeIdx] } },
+                    { binding: 1, resource: { buffer: resolutionBuffer } }
+                ]
+            });
+            bindGroupParticleRender1 = device.createBindGroup({
+                layout: pipelineParticleRender.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: particleBuffers[readIdx] } },
+                    { binding: 1, resource: { buffer: resolutionBuffer } }
+                ]
+            });
+        }
+
+        function paintBrush(canvasX, canvasY) {
+            const brushParams = new Float32Array([canvasX / W, canvasY / H, params.brushSize, params.brushColor, params.brushOpacity, Math.min(0.99, params.brushFeather)]);
+            const brushUniform = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+            new Float32Array(brushUniform.getMappedRange()).set(brushParams);
+            brushUniform.unmap();
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginComputePass();
+            pass.setPipeline(pipelineBrushCompute);
+            pass.setBindGroup(0, device.createBindGroup({
+                layout: pipelineBrushCompute.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: gradientView },
+                    { binding: 1, resource: { buffer: brushUniform } }
+                ]
+            }));
+            pass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+        }
+
+        function wireControls() {
+            const flowSlider = document.getElementById('flowSlider');
+            const densitySlider = document.getElementById('densitySlider');
+            const velocitySlider = document.getElementById('velocitySlider');
+            const brushSlider = document.getElementById('brushSlider');
+            const colorSlider = document.getElementById('colorSlider');
+            const opacitySlider = document.getElementById('opacitySlider');
+            const featherSlider = document.getElementById('featherSlider');
+            const heatMapCheck = document.getElementById('heatMapCheck');
+            const resetGradient = document.getElementById('resetGradient');
+            const colorPreview = document.getElementById('colorPreview');
+
+            const updateUniform = () => {
+                const u = new Float32Array(uniformBuffer.getMappedRange?.() ? 16 : 64);
+                device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([
+                    W, H, params.flowRate * 0.5, params.velocityDamping,
+                    INLET_X, INLET_Y, DRAIN_X, DRAIN_Y,
+                    DRAIN_W / 2, DRAIN_H / 2, TABLE_SURFACE_Y, 0,
+                    SAMPLE_DIST, 0, 0, 0
+                ]));
+                device.queue.writeBuffer(uniformBuffer, 48, new Uint32Array([frameCount]));
+            };
+
+            flowSlider.addEventListener('input', (e) => { params.flowRate = parseFloat(e.target.value); document.getElementById('flowValue').textContent = params.flowRate.toFixed(1); });
+            densitySlider.addEventListener('input', (e) => { params.particleDensity = parseFloat(e.target.value); document.getElementById('densityValue').textContent = params.particleDensity.toFixed(1); });
+            velocitySlider.addEventListener('input', (e) => { params.velocityDamping = parseFloat(e.target.value); document.getElementById('velocityValue').textContent = params.velocityDamping.toFixed(2); });
+            brushSlider.addEventListener('input', (e) => { params.brushSize = parseInt(e.target.value); document.getElementById('brushValue').textContent = params.brushSize; });
+            colorSlider.addEventListener('input', (e) => {
+                params.brushColor = parseInt(e.target.value);
+                document.getElementById('colorValue').textContent = params.brushColor;
+                colorPreview.style.background = `rgb(${params.brushColor},${params.brushColor},${params.brushColor})`;
+            });
+            opacitySlider.addEventListener('input', (e) => { params.brushOpacity = parseFloat(e.target.value); document.getElementById('opacityValue').textContent = params.brushOpacity.toFixed(2); });
+            featherSlider.addEventListener('input', (e) => { params.brushFeather = parseFloat(e.target.value); document.getElementById('featherValue').textContent = params.brushFeather.toFixed(1); });
+            heatMapCheck.addEventListener('change', (e) => { params.showHeatMap = e.target.checked; });
+
+            resetGradient.addEventListener('click', () => { initGradientPass(); });
+
+            canvas.addEventListener('mousedown', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * W;
+                const y = ((e.clientY - rect.top) / rect.height) * H;
+                paintBrush(x, y);
+                canvas._drawing = true;
+            });
+            canvas.addEventListener('mousemove', (e) => {
+                if (!canvas._drawing) return;
+                const rect = canvas.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * W;
+                const y = ((e.clientY - rect.top) / rect.height) * H;
+                paintBrush(x, y);
+            });
+            canvas.addEventListener('mouseup', () => { canvas._drawing = false; });
+            canvas.addEventListener('mouseleave', () => { canvas._drawing = false; });
+        }
+
+        function loop() {
+            if (!run || !device) return;
+            frameCount++;
+
+            const uniformF32 = new Float32Array([W, H, params.flowRate * 0.5, params.velocityDamping, INLET_X, INLET_Y, DRAIN_X, DRAIN_Y, DRAIN_W / 2, DRAIN_H / 2, TABLE_SURFACE_Y]);
+            device.queue.writeBuffer(uniformBuffer, 0, uniformF32);
+            device.queue.writeBuffer(uniformBuffer, 44, new Uint32Array([frameCount]));
+            device.queue.writeBuffer(uniformBuffer, 48, new Float32Array([SAMPLE_DIST]));
+
+            const encoder = device.createCommandEncoder();
+            const readIdx = particleSwap;
+            const writeIdx = 1 - particleSwap;
+
+            const computePass = encoder.beginComputePass();
+            computePass.setPipeline(pipelineParticleCompute);
+            computePass.setBindGroup(0, readIdx === 0 ? bindGroupParticleCompute0 : bindGroupParticleCompute1);
+            computePass.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64));
+            computePass.end();
+
+            particleSwap = 1 - particleSwap;
+
+            encoder.copyTextureToTexture(
+                { texture: gradientTexture },
+                { texture: gradientDisplayTexture },
+                [W, H, 1]
+            );
+
+            const view = context.getCurrentTexture().createView();
+            const renderPass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view,
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    clearValue: [0.15, 0.15, 0.18, 1]
+                }]
+            });
+
+            renderPass.setPipeline(pipelineDrawGradient);
+            renderPass.setBindGroup(0, device.createBindGroup({
+                layout: pipelineDrawGradient.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: gradientDisplayTexture.createView() },
+                    { binding: 1, resource: sampler }
+                ]
+            }));
+            renderPass.setVertexBuffer(0, vertexBufferQuad);
+            renderPass.draw(4);
+
+            renderPass.setPipeline(pipelineParticleRender);
+            renderPass.setVertexBuffer(0, vertexBufferQuad);
+            renderPass.setBindGroup(0, writeIdx === 0 ? bindGroupParticleRender0 : bindGroupParticleRender1);
+            renderPass.draw(4, MAX_PARTICLES);
+
+            renderPass.end();
+            device.queue.submit([encoder.finish()]);
+            requestAnimationFrame(loop);
+        }
+
+        init().catch(e => { document.body.innerHTML = '<p>WebGPU init failed: ' + e.message + '</p>'; });
+    </script>
+</body>
+</html>

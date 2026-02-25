@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emriver Stream Table - Hydrodynamic Model</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DIN+Round&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 20px;
+            font-family: 'DIN Round', sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        h1 {
+            font-size: 24px;
+            font-weight: 400;
+            margin-bottom: 20px;
+            letter-spacing: 0.02em;
+        }
+        
+        .control-group {
+            margin-bottom: 20px;
+        }
+        
+        .control-group h2 {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #666;
+        }
+        
+        .canvas-container {
+            position: relative;
+            width: 900px;
+            height: 300px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            background: #fff;
+        }
+        
+        #bgCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin: 8px 0;
+            font-size: 13px;
+        }
+        
+        label {
+            min-width: 140px;
+            font-weight: 400;
+        }
+        
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 200px;
+            height: 2px;
+            background: #ddd;
+            outline: none;
+            border: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #333;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            background: #333;
+            cursor: pointer;
+            border-radius: 50%;
+            border: none;
+        }
+        
+        .value {
+            min-width: 40px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        
+        #colorPreview {
+            display: inline-block;
+            width: 30px;
+            height: 20px;
+            border: 1px solid #ddd;
+        }
+        
+        button {
+            padding: 8px 16px;
+            background: #333;
+            color: #fff;
+            border: none;
+            font-family: 'DIN Round', sans-serif;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            background: #555;
+        }
+        
+        .hint {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Emriver Stream Table — Hydrodynamic Model (Draft 3)</h1>
+    
+    <div class="control-group">
+        <h2>Hydrodynamics</h2>
+        <div class="controls">
+            <label>Flow rate (Q):</label>
+            <input type="range" id="flowSlider" min="0" max="10" step="0.1" value="1">
+            <span class="value" id="flowValue">1.0</span>
+        </div>
+        <div class="hint">Base discharge; scales gradient-driven velocity.</div>
+        
+        <div class="controls">
+            <label>Flow strength (τ ∝ slope):</label>
+            <input type="range" id="strengthSlider" min="0" max="3" step="0.1" value="1.2">
+            <span class="value" id="strengthValue">1.2</span>
+        </div>
+        <div class="hint">Velocity scales with gradient magnitude (shear-stress proxy).</div>
+        
+        <div class="controls">
+            <label>Roughness (Manning-like):</label>
+            <input type="range" id="roughnessSlider" min="0" max="2" step="0.1" value="0.5">
+            <span class="value" id="roughnessValue">0.5</span>
+        </div>
+        <div class="hint">Dark terrain slows flow; 0 = no effect.</div>
+        
+        <div class="controls">
+            <label>Diffusivity (turbulent):</label>
+            <input type="range" id="diffusivitySlider" min="0" max="100" step="5" value="15">
+            <span class="value" id="diffusivityValue">15</span>
+        </div>
+        <div class="hint">Random walk scale (m²/s proxy).</div>
+        
+        <div class="controls">
+            <label>Deposition (Shields):</label>
+            <input type="range" id="depositionSlider" min="0" max="1" step="0.1" value="0.5">
+            <span class="value" id="depositionValue">0.5</span>
+        </div>
+        <div class="hint">Strength of size-dependent deposit when flow &lt; critical.</div>
+        
+        <div class="controls">
+            <label>DEM erosion rate:</label>
+            <input type="range" id="demErosionSlider" min="0" max="4" step="0.1" value="2.8">
+            <span class="value" id="demErosionValue">2.8</span>
+        </div>
+        <div class="hint">Flow scours bed (darkens terrain) over time.</div>
+        
+        <div class="controls">
+            <label>DEM deposition rate:</label>
+            <input type="range" id="demDepositionSlider" min="0" max="2" step="0.1" value="0.3">
+            <span class="value" id="demDepositionValue">0.3</span>
+        </div>
+        <div class="hint">Deposited sediment raises bed (lightens terrain).</div>
+    </div>
+    
+    <div class="control-group">
+        <h2>Simulation</h2>
+        <div class="controls">
+            <label>Particle density:</label>
+            <input type="range" id="densitySlider" min="0" max="10" step="0.5" value="2">
+            <span class="value" id="densityValue">2.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Velocity damping:</label>
+            <input type="range" id="velocitySlider" min="0.9" max="0.99" step="0.01" value="0.98">
+            <span class="value" id="velocityValue">0.98</span>
+        </div>
+        
+        <button id="clearButton">Clear Heat Map</button>
+    </div>
+    
+    <div class="control-group">
+        <h2>Brush</h2>
+        <div class="controls">
+            <label>Brush size:</label>
+            <input type="range" id="brushSlider" min="5" max="80" step="5" value="20">
+            <span class="value" id="brushValue">20</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush color (terrain):</label>
+            <input type="range" id="colorSlider" min="0" max="255" step="1" value="255">
+            <span class="value" id="colorValue">255</span>
+            <span id="colorPreview" style="background: rgb(255,255,255);"></span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush opacity:</label>
+            <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="1">
+            <span class="value" id="opacityValue">1.0</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush feather:</label>
+            <input type="range" id="featherSlider" min="0" max="3" step="0.1" value="1.5">
+            <span class="value" id="featherValue">1.5</span>
+        </div>
+        
+        <div class="controls">
+            <label>Brush noise:</label>
+            <input type="range" id="noiseSlider" min="0" max="50" step="1" value="0">
+            <span class="value" id="noiseValue">0</span>
+        </div>
+    </div>
+    
+    <div class="canvas-container">
+        <canvas id="bgCanvas" width="900" height="300"></canvas>
+        <canvas id="canvas" width="900" height="300"></canvas>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const bgCanvas = document.getElementById('bgCanvas');
+        const bgCtx = bgCanvas.getContext('2d');
+        const flowSlider = document.getElementById('flowSlider');
+        const strengthSlider = document.getElementById('strengthSlider');
+        const roughnessSlider = document.getElementById('roughnessSlider');
+        const diffusivitySlider = document.getElementById('diffusivitySlider');
+        const depositionSlider = document.getElementById('depositionSlider');
+        const densitySlider = document.getElementById('densitySlider');
+        const velocitySlider = document.getElementById('velocitySlider');
+        const brushSlider = document.getElementById('brushSlider');
+        const colorSlider = document.getElementById('colorSlider');
+        const opacitySlider = document.getElementById('opacitySlider');
+        const featherSlider = document.getElementById('featherSlider');
+        const noiseSlider = document.getElementById('noiseSlider');
+        const clearButton = document.getElementById('clearButton');
+        const flowValue = document.getElementById('flowValue');
+        const strengthValue = document.getElementById('strengthValue');
+        const roughnessValue = document.getElementById('roughnessValue');
+        const diffusivityValue = document.getElementById('diffusivityValue');
+        const depositionValue = document.getElementById('depositionValue');
+        const densityValue = document.getElementById('densityValue');
+        const velocityValue = document.getElementById('velocityValue');
+        const brushValue = document.getElementById('brushValue');
+        const colorValue = document.getElementById('colorValue');
+        const opacityValue = document.getElementById('opacityValue');
+        const featherValue = document.getElementById('featherValue');
+        const noiseValue = document.getElementById('noiseValue');
+        const colorPreview = document.getElementById('colorPreview');
+        
+        let flowRate = 1.0;
+        let flowStrength = 1.2;   // gradient magnitude → velocity scale (shear stress proxy)
+        let roughness = 0.5;      // dark terrain reduces speed (Manning-like)
+        let diffusivity = 15;      // turbulent diffusivity (scales random walk)
+        let depositionStrength = 0.5; // Shields-like: deposit when flow < critical
+        let particleDensity = 2.0;
+        let velocityDamping = 0.98;
+        let brushSize = 20;
+        let brushColor = 255;
+        let brushOpacity = 1.0;
+        let brushFeather = 1.5;
+        let brushNoise = 0;
+        let isDrawing = false;
+        let particles = [];
+        
+        // DEM evolution: flow modifies topography over time
+        let demErosionRate = 2.8;   // how much flow scours the bed (darkens)
+        let demDepositionRate = 0.3; // how much deposited sediment raises the bed (lightens)
+        const erosionDepositionEvents = []; // { x, y, erode?, deposit? } per particle per frame
+        
+        const cellSize = 1;
+        const gridWidth = Math.floor(canvas.width / cellSize);
+        const gridHeight = Math.floor(canvas.height / cellSize);
+        let heatMapGrid = [];
+        let maxCount = 1;
+        
+        const decayFrames = 1800;
+        const decayRate = 1 / decayFrames;
+        
+        let gradientCanvas = document.createElement('canvas');
+        let gradientCtx = gradientCanvas.getContext('2d', { willReadFrequently: true });
+        let gradientData = null;
+        let gradientLoaded = false;
+        
+        // Size classes with Shields-like critical flow (scaled for 900x300)
+        const sizeClasses = [
+            { size: 2, color: '#3366FF', criticalFlow: 0.15 },   // Small - easily entrained
+            { size: 5, color: '#FFA500', criticalFlow: 0.35 },   // Medium
+            { size: 8, color: '#CC3366', criticalFlow: 0.60 }     // Large - needs strong flow
+        ];
+        
+        const inletX = 50;
+        const inletY = canvas.height / 2;
+        const drainX = canvas.width - 50;
+        const drainY = canvas.height / 2;
+        
+        function pixelToGrid(x, y) {
+            return {
+                col: Math.floor(x / cellSize),
+                row: Math.floor(y / cellSize)
+            };
+        }
+        
+        function gridToPixel(col, row) {
+            return {
+                x: col * cellSize + cellSize / 2,
+                y: row * cellSize + cellSize / 2
+            };
+        }
+        
+        function initializeGrid() {
+            heatMapGrid = [];
+            maxCount = 1;
+            for (let row = 0; row < gridHeight; row++) {
+                heatMapGrid[row] = [];
+                for (let col = 0; col < gridWidth; col++) {
+                    heatMapGrid[row][col] = 0;
+                }
+            }
+        }
+        
+        initializeGrid();
+        
+        function getCellColor(count) {
+            if (count === 0) return null;
+            const logCount = Math.log(count + 1);
+            const logMax = Math.log(maxCount + 1);
+            const normalized = Math.min(logCount / logMax, 1);
+            const intensity = Math.pow(normalized, 0.6);
+            let r, g, b;
+            if (intensity < 0.25) {
+                const t = intensity / 0.25;
+                r = 0; g = Math.floor(t * 255); b = 255;
+            } else if (intensity < 0.5) {
+                const t = (intensity - 0.25) / 0.25;
+                r = 0; g = 255; b = Math.floor((1 - t) * 255);
+            } else if (intensity < 0.75) {
+                const t = (intensity - 0.5) / 0.25;
+                r = Math.floor(t * 255); g = 255; b = 0;
+            } else {
+                const t = (intensity - 0.75) / 0.25;
+                r = 255; g = Math.floor((1 - t) * 255); b = 0;
+            }
+            return `rgba(${r}, ${g}, ${b}, 0.55)`;
+        }
+        
+        function getGradientValue(x, y) {
+            if (!gradientLoaded || !gradientData) return 0.5;
+            const ix = Math.floor(Math.max(0, Math.min(x, canvas.width - 1)) / canvas.width * gradientCanvas.width);
+            const iy = Math.floor(Math.max(0, Math.min(y, canvas.height - 1)) / canvas.height * gradientCanvas.height);
+            const index = (iy * gradientCanvas.width + ix) * 4;
+            return gradientData[index] / 255;
+        }
+        
+        // Get gradient vector and magnitude; brightness = elevation proxy (dark = low).
+        function getGradientAndStrength(x, y) {
+            if (!gradientLoaded) return { gx: 0, gy: 0, magnitude: 0, roughness: 0 };
+            const sampleDist = 10;
+            const v = getGradientValue(x, y);
+            const vR = getGradientValue(x + sampleDist, y);
+            const vD = getGradientValue(x, y + sampleDist);
+            const vL = getGradientValue(x - sampleDist, y);
+            const vU = getGradientValue(x, y - sampleDist);
+            const gx = (vL - vR);
+            const gy = (vU - vD);
+            const magnitude = Math.sqrt(gx * gx + gy * gy) || 0.001;
+            // Roughness: dark terrain (low brightness) = high roughness
+            const roughness = 1 - v;
+            return { gx, gy, magnitude, roughness };
+        }
+        
+        function initializeGradient() {
+            gradientCanvas.width = canvas.width;
+            gradientCanvas.height = canvas.height;
+            const gradient = gradientCtx.createLinearGradient(0, 0, canvas.width, 0);
+            gradient.addColorStop(0, '#ffffff');
+            gradient.addColorStop(1, '#404040');
+            gradientCtx.fillStyle = gradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            const circleX = canvas.width - 50;
+            const circleY = canvas.height / 2;
+            const circleRadius = 100;
+            const radialGradient = gradientCtx.createRadialGradient(
+                circleX, circleY, 0, circleX, circleY, circleRadius
+            );
+            radialGradient.addColorStop(0, '#000000');
+            radialGradient.addColorStop(0.5, '#202020');
+            radialGradient.addColorStop(1, 'transparent');
+            gradientCtx.fillStyle = radialGradient;
+            gradientCtx.fillRect(0, 0, canvas.width, canvas.height);
+            bgCtx.drawImage(gradientCanvas, 0, 0);
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+            gradientLoaded = true;
+        }
+        
+        // Min DEM value: erosion cannot darken below this, so flow always has a gradient toward drain
+        const DEM_FLOOR = 40;
+        
+        // Light 3x3 blur to smooth erosion pits so particles don't get stuck in zero-gradient holes
+        function smoothDem(data, w, h) {
+            const out = new Uint8ClampedArray(data);
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    if (x >= inletX - 30 && x <= inletX + 30 && y >= inletY - 30 && y <= inletY + 30) continue;
+                    if (x >= drainX - 30 && x <= drainX + 30 && y >= drainY - 30 && y <= drainY + 30) continue;
+                    let sum = 0, n = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const nx = x + dx, ny = y + dy;
+                            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                                sum += data[(ny * w + nx) * 4];
+                                n++;
+                            }
+                        }
+                    }
+                    const v = Math.round(sum / n);
+                    const i = (y * w + x) * 4;
+                    out[i] = out[i + 1] = out[i + 2] = v;
+                }
+            }
+            for (let j = 0; j < data.length; j++) data[j] = out[j];
+        }
+        
+        // Apply erosion (darken) and deposition (lighten) to the DEM from this frame's particle activity
+        function applyDemChanges() {
+            if (erosionDepositionEvents.length === 0) return;
+            const w = canvas.width;
+            const h = canvas.height;
+            const id = gradientCtx.getImageData(0, 0, w, h);
+            const data = id.data;
+            const radius = 2; // pixel radius for smoothing
+            const clamp = (v) => Math.max(DEM_FLOOR, Math.min(255, Math.round(v)));
+            
+            for (const e of erosionDepositionEvents) {
+                const px = Math.floor(e.x);
+                const py = Math.floor(e.y);
+                if (px < 0 || px >= w || py < 0 || py >= h) continue;
+                if (px >= inletX - 25 && px <= inletX + 25 && py >= inletY - 25 && py <= inletY + 25) continue;
+                if (px >= drainX - 25 && px <= drainX + 25 && py >= drainY - 25 && py <= drainY + 25) continue;
+                
+                const erodeAmount = e.erode * demErosionRate * 1.1;
+                const depositAmount = e.deposit * demDepositionRate * 0.15;
+                
+                for (let dy = -radius; dy <= radius; dy++) {
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const nx = px + dx;
+                        const ny = py + dy;
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        const weight = dist <= radius ? 1 - dist / (radius + 1) * 0.4 : 0;
+                        const i = (ny * w + nx) * 4;
+                        const current = data[i];
+                        let next = current;
+                        if (erodeAmount > 0) next -= erodeAmount * weight;
+                        if (depositAmount > 0) next += depositAmount * weight;
+                        const v = clamp(next);
+                        data[i] = data[i + 1] = data[i + 2] = v;
+                    }
+                }
+            }
+            
+            smoothDem(data, w, h);
+            gradientCtx.putImageData(id, 0, 0);
+            bgCtx.drawImage(gradientCanvas, 0, 0);
+            gradientData = gradientCtx.getImageData(0, 0, w, h).data;
+        }
+        
+        initializeGradient();
+        
+        function drawOnGradient(x, y) {
+            [bgCtx, gradientCtx].forEach(context => {
+                context.save();
+                context.globalAlpha = brushOpacity;
+                const effectiveFeather = Math.min(brushFeather, 0.99);
+                if (brushNoise > 0) {
+                    const numSpots = Math.max(5, Math.floor(brushSize * 2));
+                    for (let i = 0; i < numSpots; i++) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const distance = Math.random() * brushSize;
+                        const spotX = x + Math.cos(angle) * distance;
+                        const spotY = y + Math.sin(angle) * distance;
+                        const colorVariation = (Math.random() - 0.5) * brushNoise;
+                        const spotColor = Math.max(0, Math.min(255, brushColor + colorVariation));
+                        const spotSize = (brushSize / 8) * (0.5 + Math.random() * 0.5);
+                        context.fillStyle = `rgba(${spotColor}, ${spotColor}, ${spotColor}, ${brushOpacity * 0.3})`;
+                        context.beginPath();
+                        context.arc(spotX, spotY, spotSize, 0, Math.PI * 2);
+                        context.fill();
+                    }
+                }
+                if (brushFeather > 0) {
+                    const featherRadius = brushSize * (1 + brushFeather);
+                    const gradient = context.createRadialGradient(x, y, 0, x, y, featherRadius);
+                    gradient.addColorStop(0, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
+                    const innerStop = Math.max(0, 1 - effectiveFeather);
+                    gradient.addColorStop(innerStop, `rgb(${brushColor}, ${brushColor}, ${brushColor})`);
+                    gradient.addColorStop(1, `rgba(${brushColor}, ${brushColor}, ${brushColor}, 0)`);
+                    context.fillStyle = gradient;
+                    context.beginPath();
+                    context.arc(x, y, featherRadius, 0, Math.PI * 2);
+                    context.fill();
+                } else {
+                    context.fillStyle = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+                    context.beginPath();
+                    context.arc(x, y, brushSize, 0, Math.PI * 2);
+                    context.fill();
+                }
+                context.restore();
+            });
+            gradientData = gradientCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+        }
+        
+        bgCanvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        bgCanvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = bgCanvas.getBoundingClientRect();
+            drawOnGradient(e.clientX - rect.left, e.clientY - rect.top);
+        });
+        bgCanvas.addEventListener('mouseup', () => { isDrawing = false; });
+        bgCanvas.addEventListener('mouseleave', () => { isDrawing = false; });
+        
+        class Particle {
+            constructor(x, y, sizeClass) {
+                this.x = x;
+                this.y = y;
+                this.size = sizeClass.size;
+                this.color = sizeClass.color;
+                this.sizeClass = sizeClass;
+                this.vx = 0;
+                this.vy = 0;
+                this.deposited = false;   // Shields: deposited when flow < critical
+                this.depositTimer = 0;     // frames until can be re-entrained
+            }
+            
+            update() {
+                const gridPos = pixelToGrid(this.x, this.y);
+                if (gridPos.row >= 0 && gridPos.row < gridHeight && gridPos.col >= 0 && gridPos.col < gridWidth) {
+                    heatMapGrid[gridPos.row][gridPos.col] += 2;
+                    if (heatMapGrid[gridPos.row][gridPos.col] > maxCount) {
+                        maxCount = heatMapGrid[gridPos.row][gridPos.col];
+                    }
+                }
+                
+                const g = getGradientAndStrength(this.x, this.y);
+                const criticalFlow = this.sizeClass.criticalFlow;
+                const flowStrengthHere = g.magnitude * flowRate * flowStrength;
+                
+                // Shields-like: when deposited and timer active, skip flow forces (particle is at rest)
+                const frozen = this.deposited && this.depositTimer > 0;
+                if (!frozen) {
+                    const roughnessFactor = Math.max(0, 1 - roughness * g.roughness);
+                    const speedScale = flowStrengthHere * roughnessFactor * 0.5;
+                    const dirScale = flowRate * 0.5 * roughnessFactor;
+                    this.vx += (g.gx / (g.magnitude || 0.001)) * speedScale + g.gx * dirScale * 0.2;
+                    this.vy += (g.gy / (g.magnitude || 0.001)) * speedScale + g.gy * dirScale * 0.2;
+                    // General rightward drift (downstream toward drain)
+                    this.vx += flowRate * 0.14;
+                }
+                
+                if (depositionStrength > 0 && flowStrengthHere < criticalFlow) {
+                    if (this.depositTimer <= 0 && !this.deposited && Math.random() < depositionStrength * 0.08) {
+                        this.deposited = true;
+                        this.depositTimer = 20 + Math.floor(Math.random() * 40);
+                    }
+                }
+                if (this.deposited) {
+                    this.depositTimer--;
+                    if (this.depositTimer <= 0 && flowStrengthHere >= criticalFlow * 1.1) {
+                        this.deposited = false;
+                    }
+                    if (frozen) {
+                        this.vx *= 0.15;
+                        this.vy *= 0.15;
+                    }
+                }
+                
+                // Settling: larger particles get extra damping when flow is weak (settling velocity effect)
+                const settling = (1 - flowStrengthHere) * (this.size / 8) * 0.15;
+                this.vx *= (1 - settling);
+                this.vy *= (1 - settling);
+                
+                // Turbulent diffusivity (random walk)
+                const diff = diffusivity * 0.008;
+                this.vx += (Math.random() - 0.5) * diff;
+                this.vy += (Math.random() - 0.5) * diff;
+                
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                const sizeFactor = (this.size - 2) / 6;
+                const dampingAdjustment = sizeFactor * 0.02;
+                const effectiveDamping = Math.min(0.99, velocityDamping + dampingAdjustment);
+                this.vx *= effectiveDamping;
+                this.vy *= effectiveDamping;
+                
+                if (this.x < 0) this.x = 0;
+                if (this.x > canvas.width) this.x = canvas.width;
+                if (this.y < 0) this.y = 0;
+                
+                const drainWidth = 40;
+                const drainHeight = 40;
+                if (this.x > drainX - drainWidth / 2 && this.x < drainX + drainWidth / 2 &&
+                    this.y > drainY - drainHeight / 2 && this.y < drainY + drainHeight / 2) {
+                    return false;
+                }
+                
+                const tableSurfaceY = canvas.height - 25;
+                if (this.y > tableSurfaceY) {
+                    this.y = tableSurfaceY;
+                    this.vy *= -0.3;
+                    this.vx *= 0.8;
+                }
+                if (this.y < 0) {
+                    this.y = 0;
+                    this.vy *= -0.3;
+                }
+                
+                // Record DEM effect: moving particles erode, deposited particles deposit
+                // Use base erosion for any moving particle so effect is visible (flowStrengthHere is often < 0.1)
+                const erodeStrength = frozen ? 0 : Math.min(1, 0.5 + flowStrengthHere * 2);
+                erosionDepositionEvents.push({
+                    x: this.x,
+                    y: this.y,
+                    erode: erodeStrength,
+                    deposit: frozen ? 1 : 0
+                });
+                return true;
+            }
+            
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function addParticles() {
+            for (let i = 0; i < 2; i++) {
+                const sizeClass = sizeClasses[Math.floor(Math.random() * sizeClasses.length)];
+                const particle = new Particle(
+                    inletX + (Math.random() - 0.5) * 20,
+                    inletY + (Math.random() - 0.5) * 20,
+                    sizeClass
+                );
+                particles.push(particle);
+            }
+        }
+        
+        function drawHeatMap() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let row = 0; row < gridHeight; row++) {
+                for (let col = 0; col < gridWidth; col++) {
+                    const count = heatMapGrid[row][col];
+                    const color = getCellColor(count);
+                    if (color) {
+                        ctx.fillStyle = color;
+                        ctx.fillRect(col * cellSize, row * cellSize, cellSize, cellSize);
+                    }
+                }
+            }
+            ctx.fillStyle = '#0000ff';
+            ctx.fillRect(inletX - 20, inletY - 20, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.fillText('Inlet', inletX - 15, inletY + 5);
+            ctx.fillStyle = '#333';
+            ctx.fillRect(drainX - 20, drainY - 20, 40, 40);
+            ctx.fillText('Drain', drainX - 15, drainY + 5);
+        }
+        
+        function animate() {
+            erosionDepositionEvents.length = 0;
+            maxCount = 1;
+            for (let row = 0; row < gridHeight; row++) {
+                for (let col = 0; col < gridWidth; col++) {
+                    if (heatMapGrid[row][col] > 0) {
+                        heatMapGrid[row][col] -= decayRate;
+                        if (heatMapGrid[row][col] < 0) heatMapGrid[row][col] = 0;
+                        if (heatMapGrid[row][col] > maxCount) maxCount = heatMapGrid[row][col];
+                    }
+                }
+            }
+            drawHeatMap();
+            particles = particles.filter(p => p.update());
+            applyDemChanges();
+            if (Math.random() < particleDensity * 0.02) addParticles();
+            requestAnimationFrame(animate);
+        }
+        
+        flowSlider.addEventListener('input', (e) => {
+            flowRate = parseFloat(e.target.value);
+            flowValue.textContent = flowRate.toFixed(1);
+        });
+        strengthSlider.addEventListener('input', (e) => {
+            flowStrength = parseFloat(e.target.value);
+            strengthValue.textContent = flowStrength.toFixed(1);
+        });
+        roughnessSlider.addEventListener('input', (e) => {
+            roughness = parseFloat(e.target.value);
+            roughnessValue.textContent = roughness.toFixed(1);
+        });
+        diffusivitySlider.addEventListener('input', (e) => {
+            diffusivity = parseInt(e.target.value);
+            diffusivityValue.textContent = diffusivity;
+        });
+        depositionSlider.addEventListener('input', (e) => {
+            depositionStrength = parseFloat(e.target.value);
+            depositionValue.textContent = depositionStrength.toFixed(1);
+        });
+        densitySlider.addEventListener('input', (e) => {
+            particleDensity = parseFloat(e.target.value);
+            densityValue.textContent = particleDensity.toFixed(1);
+        });
+        velocitySlider.addEventListener('input', (e) => {
+            velocityDamping = parseFloat(e.target.value);
+            velocityValue.textContent = velocityDamping.toFixed(2);
+        });
+        brushSlider.addEventListener('input', (e) => {
+            brushSize = parseInt(e.target.value);
+            brushValue.textContent = brushSize;
+        });
+        colorSlider.addEventListener('input', (e) => {
+            brushColor = parseInt(e.target.value);
+            colorValue.textContent = brushColor;
+            colorPreview.style.background = `rgb(${brushColor}, ${brushColor}, ${brushColor})`;
+        });
+        opacitySlider.addEventListener('input', (e) => {
+            brushOpacity = parseFloat(e.target.value);
+            opacityValue.textContent = brushOpacity.toFixed(2);
+        });
+        featherSlider.addEventListener('input', (e) => {
+            brushFeather = parseFloat(e.target.value);
+            featherValue.textContent = brushFeather.toFixed(1);
+        });
+        noiseSlider.addEventListener('input', (e) => {
+            brushNoise = parseInt(e.target.value);
+            noiseValue.textContent = brushNoise;
+        });
+        clearButton.addEventListener('click', () => initializeGrid());
+        
+        const demErosionSlider = document.getElementById('demErosionSlider');
+        const demDepositionSlider = document.getElementById('demDepositionSlider');
+        const demErosionValue = document.getElementById('demErosionValue');
+        const demDepositionValue = document.getElementById('demDepositionValue');
+        demErosionSlider.addEventListener('input', (e) => {
+            demErosionRate = parseFloat(e.target.value);
+            demErosionValue.textContent = demErosionRate.toFixed(1);
+        });
+        demDepositionSlider.addEventListener('input', (e) => {
+            demDepositionRate = parseFloat(e.target.value);
+            demDepositionValue.textContent = demDepositionRate.toFixed(1);
+        });
+        
+        addParticles();
+        animate();
+    </script>
+</body>
+</html>
