@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPU Water Flow (LBM + DEM)</title>
+  <link rel="stylesheet" href="./assets/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { position: absolute; inset: 0; }
+    #gl { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+    #hud {
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(20,20,20,0.86);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 12px;
+      min-width: 290px;
+      color: #e8eaed;
+      backdrop-filter: blur(6px);
+    }
+    #hud .title { display:flex; align-items:baseline; gap: 10px; }
+    #hud .title .name { font-weight: 700; font-size: 13px; }
+    #hud .title .sub { font-size: 11px; color:#9aa0a6; }
+    #hud .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #hud label { width: 92px; font-size: 11px; color:#9aa0a6; }
+    #hud input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #hud .val { width: 56px; text-align:right; font-size: 11px; color:#e8eaed; }
+    #hud .tog { display:flex; align-items:center; gap: 8px; padding-top: 8px; }
+    #hud .tog input { accent-color: #8ab4f8; }
+    #hud .btns { display:flex; gap: 8px; margin-top: 8px; }
+    #hud button {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(48,49,52,0.9);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #hud button:hover { background: rgba(60,64,67,0.95); }
+    #hud .hint { margin-top: 8px; font-size: 11px; color:#9aa0a6; line-height: 1.35; }
+    #hud .err { margin-top: 8px; font-size: 11px; color:#ffb4ab; display:none; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="gl"></canvas>
+  <div id="hud">
+    <div class="title">
+      <div class="name">LBM water sheet</div>
+      <div class="sub">D2Q9 • GPU • DEM slope force</div>
+    </div>
+
+    <div class="tog">
+      <input type="checkbox" id="run" checked>
+      <label for="run" style="width:auto;color:#e8eaed;font-size:12px;">Run</label>
+    </div>
+
+    <div class="row">
+      <label>Viscosity</label>
+      <input type="range" id="visc" min="0.01" max="0.20" step="0.005" value="0.06">
+      <div class="val" id="visc-val">0.06</div>
+    </div>
+    <div class="row">
+      <label>Slope force</label>
+      <input type="range" id="force" min="0" max="4" step="0.05" value="1.2">
+      <div class="val" id="force-val">1.20</div>
+    </div>
+    <div class="row">
+      <label>Rain</label>
+      <input type="range" id="rain" min="0" max="2.5" step="0.05" value="0.35">
+      <div class="val" id="rain-val">0.35</div>
+    </div>
+    <div class="row">
+      <label>Evap</label>
+      <input type="range" id="evap" min="0" max="0.08" step="0.001" value="0.01">
+      <div class="val" id="evap-val">0.010</div>
+    </div>
+    <div class="row">
+      <label>Opacity</label>
+      <input type="range" id="op" min="0" max="1" step="0.02" value="0.60">
+      <div class="val" id="op-val">0.60</div>
+    </div>
+
+    <div class="btns">
+      <button id="reset">Reset water</button>
+      <button id="reloadDem">Reload DEM</button>
+    </div>
+
+    <div class="hint">
+      This is a **2D sheet-flow** approximation: LBM evolves a shallow “water density” field and is pushed downhill by DEM slope.
+      For stability, it runs on a fixed grid (default 256×256) and reprojects over the map view.
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <script src="./assets/maplibre-gl.js"></script>
+  <script type="module">
+    // -------- Map --------
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          base: {
+            type: 'raster',
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
+          }
+        },
+        layers: [{ id: 'base', type: 'raster', source: 'base' }]
+      },
+      center: [-105.67, 33.33],
+      zoom: 13
+    });
+
+    // -------- GL setup --------
+    const canvas = document.getElementById('gl');
+    /** @type {WebGL2RenderingContext|null} */
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false });
+    const errEl = document.getElementById('err');
+    function fail(msg) {
+      errEl.style.display = 'block';
+      errEl.textContent = msg;
+      throw new Error(msg);
+    }
+    if (!gl) fail('WebGL2 not available.');
+
+    const extCBF = gl.getExtension('EXT_color_buffer_float');
+    const extCBHF = gl.getExtension('EXT_color_buffer_half_float');
+    if (!extCBF && !extCBHF) fail('No float/half-float render targets available (need EXT_color_buffer_float or EXT_color_buffer_half_float).');
+
+    // Prefer half-float for compatibility.
+    const simInternal = gl.RGBA16F;
+    const simType = gl.HALF_FLOAT;
+
+    function compile(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const info = gl.getShaderInfoLog(s) || 'shader compile failed';
+        gl.deleteShader(s);
+        fail(info);
+      }
+      return s;
+    }
+    function link(vsSrc, fsSrc) {
+      const p = gl.createProgram();
+      gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+      gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        const info = gl.getProgramInfoLog(p) || 'program link failed';
+        gl.deleteProgram(p);
+        fail(info);
+      }
+      return p;
+    }
+
+    const quadVS = `#version 300 es
+    precision highp float;
+    out vec2 vUv;
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      vUv = p;
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+
+    // -------- DEM (Terrarium) --------
+    const DEM_Z = 14;
+    const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
+    const TILE = 256;
+    const MOSAIC = 3;
+    const demCanvas = document.createElement('canvas');
+    demCanvas.width = TILE * MOSAIC;
+    demCanvas.height = TILE * MOSAIC;
+    const dem2d = demCanvas.getContext('2d');
+    let demTex = null;
+    let tileOrigin = { x: 0, y: 0, z: DEM_Z };
+
+    function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
+    function latToTileY(lat, z) {
+      const r = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+
+    async function loadDemAtCenter() {
+      const c = map.getCenter();
+      const tx = lonToTileX(c.lng, DEM_Z);
+      const ty = latToTileY(c.lat, DEM_Z);
+      tileOrigin = { x: tx - 1, y: ty - 1, z: DEM_Z };
+
+      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      const jobs = [];
+      for (let j = 0; j < MOSAIC; j++) {
+        for (let i = 0; i < MOSAIC; i++) {
+          const x = tileOrigin.x + i;
+          const y = tileOrigin.y + j;
+          const url = `${DEM_URL}/${DEM_Z}/${x}/${y}.png`;
+          jobs.push(new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve({ img, i, j });
+            img.onerror = () => reject(new Error('DEM tile failed: ' + url));
+            img.src = url;
+          }));
+        }
+      }
+      const tiles = await Promise.all(jobs);
+      for (const t of tiles) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+
+      if (!demTex) demTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, demTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, demCanvas.width, demCanvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, demCanvas);
+    }
+
+    // Map a simulation uv (0..1) to DEM uv (0..1). This keeps the sim “attached” to view center.
+    // Simple approach: align DEM mosaic to simulation domain.
+    function demUvFromSimUv(simUv) {
+      return simUv; // 1:1 in this minimal version
+    }
+
+    // -------- LBM sim (D2Q9) --------
+    // Pack f0..f8 across 3 RGBA textures:
+    //  tex0: f0 f1 f2 f3
+    //  tex1: f4 f5 f6 f7
+    //  tex2: f8 0  0  0
+    const N = 256; // sim grid resolution
+    let ping = true;
+    let f0a, f1a, f2a, f0b, f1b, f2b;
+    let fbA, fbB;
+
+    function makeSimTex(w, h) {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, simInternal, w, h, 0, gl.RGBA, simType, null);
+      return t;
+    }
+    function makeFbo(t0, t1, t2) {
+      const f = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t0, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, t1, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, t2, 0);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2]);
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (!ok) fail('LBM FBO incomplete. Your GPU/browser may not support MRT with half-float.');
+      return f;
+    }
+
+    function allocSim() {
+      f0a = makeSimTex(N, N); f1a = makeSimTex(N, N); f2a = makeSimTex(N, N);
+      f0b = makeSimTex(N, N); f1b = makeSimTex(N, N); f2b = makeSimTex(N, N);
+      fbA = makeFbo(f0a, f1a, f2a);
+      fbB = makeFbo(f0b, f1b, f2b);
+      ping = true;
+    }
+
+    // Initialize distributions near rest with a small puddle at center.
+    const initFS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    uniform vec2 uRes;
+    layout(location=0) out vec4 o0;
+    layout(location=1) out vec4 o1;
+    layout(location=2) out vec4 o2;
+    void main() {
+      vec2 uv = vUv;
+      vec2 p = (uv - 0.5) * 2.0;
+      float r = length(p);
+      float rho = 1.0 + 0.35 * smoothstep(0.55, 0.0, r);
+      vec2 u = vec2(0.0);
+      // D2Q9 weights
+      float w0 = 4.0/9.0;
+      float w1 = 1.0/9.0;
+      float w2 = 1.0/36.0;
+      float usq = dot(u,u);
+      // equilibrium
+      float fe0 = w0 * rho * (1.0 - 1.5*usq);
+      float feE = w1 * rho * (1.0 + 3.0*u.x + 4.5*u.x*u.x - 1.5*usq);
+      float feW = w1 * rho * (1.0 - 3.0*u.x + 4.5*u.x*u.x - 1.5*usq);
+      float feN = w1 * rho * (1.0 + 3.0*u.y + 4.5*u.y*u.y - 1.5*usq);
+      float feS = w1 * rho * (1.0 - 3.0*u.y + 4.5*u.y*u.y - 1.5*usq);
+      float feNE = w2 * rho * (1.0 + 3.0*(u.x+u.y) + 4.5*(u.x+u.y)*(u.x+u.y) - 1.5*usq);
+      float feNW = w2 * rho * (1.0 + 3.0*(-u.x+u.y) + 4.5*(-u.x+u.y)*(-u.x+u.y) - 1.5*usq);
+      float feSE = w2 * rho * (1.0 + 3.0*(u.x-u.y) + 4.5*(u.x-u.y)*(u.x-u.y) - 1.5*usq);
+      float feSW = w2 * rho * (1.0 + 3.0*(-u.x-u.y) + 4.5*(-u.x-u.y)*(-u.x-u.y) - 1.5*usq);
+      o0 = vec4(fe0, feE, feW, feN);
+      o1 = vec4(feS, feNE, feNW, feSE);
+      o2 = vec4(feSW, 0.0, 0.0, 0.0);
+    }`;
+
+    // One-step "pull" streaming + collision + forcing.
+    // Force uses DEM slope: F = -k * grad(height).
+    const stepFS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    uniform sampler2D uF0;
+    uniform sampler2D uF1;
+    uniform sampler2D uF2;
+    uniform sampler2D uDem;
+    uniform vec2 uRes;
+    uniform vec2 uDemRes;
+    uniform float uOmega;   // relaxation
+    uniform float uForceK;
+    uniform float uRain;
+    uniform float uEvap;
+    layout(location=0) out vec4 o0;
+    layout(location=1) out vec4 o1;
+    layout(location=2) out vec4 o2;
+
+    // Sample packed distributions at uv
+    void sampleF(vec2 uv, out float f0, out float fE, out float fW, out float fN,
+                 out float fS, out float fNE, out float fNW, out float fSE, out float fSW) {
+      vec4 a = texture(uF0, uv);
+      vec4 b = texture(uF1, uv);
+      vec4 c = texture(uF2, uv);
+      f0 = a.x; fE = a.y; fW = a.z; fN = a.w;
+      fS = b.x; fNE = b.y; fNW = b.z; fSE = b.w;
+      fSW = c.x;
+    }
+
+    float terrariumHeight(vec2 demUv) {
+      vec3 cc = texture(uDem, demUv).rgb;
+      float r = cc.r * 255.0;
+      float g = cc.g * 255.0;
+      float b = cc.b * 255.0;
+      return (r * 256.0 + g + b / 256.0) - 32768.0;
+    }
+
+    float feqDir(vec2 c, float w, float rho, vec2 u, float usq) {
+      float cu = dot(c, u);
+      return w * rho * (1.0 + 3.0*cu + 4.5*cu*cu - 1.5*usq);
+    }
+
+    void main() {
+      vec2 uv = vUv;
+      vec2 texel = 1.0 / uRes;
+
+      // Pull streaming: read from neighbors in opposite directions
+      float f0, fE, fW, fN, fS, fNE, fNW, fSE, fSW;
+      // center for f0
+      float c0, cE, cW, cN, cS, cNE, cNW, cSE, cSW;
+      sampleF(uv, c0,cE,cW,cN,cS,cNE,cNW,cSE,cSW);
+
+      // from west neighbor's east-going becomes our fE
+      float t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW;
+      sampleF(uv - vec2(texel.x,0.0), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW);
+      fE = tE;
+      // from east neighbor's west-going becomes our fW
+      sampleF(uv + vec2(texel.x,0.0), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW);
+      fW = tW;
+      // from south neighbor's north-going becomes our fN
+      sampleF(uv + vec2(0.0,texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW);
+      fN = tN;
+      // from north neighbor's south-going becomes our fS
+      sampleF(uv - vec2(0.0,texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW);
+      fS = tS;
+      // diagonals
+      sampleF(uv - vec2(texel.x,texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW); // NW neighbor
+      fSE = tSE;
+      sampleF(uv + vec2(texel.x,texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW); // SE neighbor
+      fNW = tNW;
+      sampleF(uv + vec2(texel.x,-texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW); // NE neighbor
+      fSW = tSW;
+      sampleF(uv + vec2(-texel.x,texel.y), t0,tE,tW,tN,tS,tNE,tNW,tSE,tSW); // SW neighbor
+      fNE = tNE;
+      // rest stays
+      f0 = c0;
+
+      // Macros
+      float rho = f0 + fE + fW + fN + fS + fNE + fNW + fSE + fSW;
+      // Add rain as density source
+      rho += uRain * 0.002;
+
+      vec2 u = vec2(0.0);
+      u.x = (fE - fW + fNE - fNW + fSE - fSW) / max(rho, 1e-6);
+      u.y = (fN - fS + fNE + fNW - fSE - fSW) / max(rho, 1e-6);
+
+      // DEM slope force (in sim space)
+      vec2 demUv = uv; // aligned in this minimal version
+      vec2 demTexel = 1.0 / uDemRes;
+      float hC = terrariumHeight(demUv);
+      float hR = terrariumHeight(demUv + vec2(demTexel.x, 0.0));
+      float hL = terrariumHeight(demUv - vec2(demTexel.x, 0.0));
+      float hD = terrariumHeight(demUv + vec2(0.0, demTexel.y));
+      float hU = terrariumHeight(demUv - vec2(0.0, demTexel.y));
+      vec2 grad = vec2(hR - hL, hD - hU) * 0.5;
+      vec2 F = -uForceK * grad;
+
+      // Guo forcing (simplified)
+      vec2 uF = u + 0.5 * F / max(rho, 1e-6);
+      float usq = dot(uF, uF);
+
+      float w0 = 4.0/9.0;
+      float w1 = 1.0/9.0;
+      float w2 = 1.0/36.0;
+
+      float fe0 = feqDir(vec2(0.0,0.0), w0, rho, uF, usq);
+      float feE = feqDir(vec2(1.0,0.0), w1, rho, uF, usq);
+      float feW = feqDir(vec2(-1.0,0.0), w1, rho, uF, usq);
+      float feN = feqDir(vec2(0.0,1.0), w1, rho, uF, usq);
+      float feS = feqDir(vec2(0.0,-1.0), w1, rho, uF, usq);
+      float feNE = feqDir(vec2(1.0,1.0), w2, rho, uF, usq);
+      float feNW = feqDir(vec2(-1.0,1.0), w2, rho, uF, usq);
+      float feSE = feqDir(vec2(1.0,-1.0), w2, rho, uF, usq);
+      float feSW = feqDir(vec2(-1.0,-1.0), w2, rho, uF, usq);
+
+      // Collision
+      f0 = mix(f0, fe0, uOmega);
+      fE = mix(fE, feE, uOmega);
+      fW = mix(fW, feW, uOmega);
+      fN = mix(fN, feN, uOmega);
+      fS = mix(fS, feS, uOmega);
+      fNE = mix(fNE, feNE, uOmega);
+      fNW = mix(fNW, feNW, uOmega);
+      fSE = mix(fSE, feSE, uOmega);
+      fSW = mix(fSW, feSW, uOmega);
+
+      // Evaporation (simple)
+      float evap = clamp(1.0 - uEvap, 0.0, 1.0);
+      f0 *= evap; fE *= evap; fW *= evap; fN *= evap; fS *= evap;
+      fNE *= evap; fNW *= evap; fSE *= evap; fSW *= evap;
+
+      o0 = vec4(f0, fE, fW, fN);
+      o1 = vec4(fS, fNE, fNW, fSE);
+      o2 = vec4(fSW, 0.0, 0.0, 0.0);
+    }`;
+
+    // Render: visualize rho (density) as water overlay
+    const renderFS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    uniform sampler2D uF0;
+    uniform sampler2D uF1;
+    uniform sampler2D uF2;
+    uniform float uOpacity;
+    out vec4 outColor;
+    void main() {
+      vec4 a = texture(uF0, vUv);
+      vec4 b = texture(uF1, vUv);
+      vec4 c = texture(uF2, vUv);
+      float rho = a.x + a.y + a.z + a.w + b.x + b.y + b.z + b.w + c.x;
+      // Map rho -> alpha (baseline near 1). Use a more aggressive mapping so it's visible while debugging.
+      float w = max(0.0, rho - 1.0);
+      float alpha = clamp(w * 6.0, 0.0, 1.0) * uOpacity;
+      vec3 col = mix(vec3(0.03, 0.15, 0.35), vec3(0.15, 0.70, 1.00), clamp(w * 2.0, 0.0, 1.0));
+      outColor = vec4(col, alpha);
+    }`;
+
+    const progInit = link(quadVS, initFS);
+    const progStep = link(quadVS, stepFS);
+    const progRender = link(quadVS, renderFS);
+    const vao = gl.createVertexArray();
+
+    function resetWater() {
+      // render init into current ping target
+      gl.useProgram(progInit);
+      gl.bindVertexArray(vao);
+      gl.viewport(0, 0, N, N);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, ping ? fbA : fbB);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // -------- UI --------
+    const state = {
+      run: true,
+      visc: 0.06,
+      force: 1.2,
+      rain: 0.35,
+      evap: 0.01,
+      op: 0.60
+    };
+    document.getElementById('run').addEventListener('change', e => state.run = e.target.checked);
+    const bind = (id, outId, fmt, set) => {
+      const el = document.getElementById(id);
+      const out = document.getElementById(outId);
+      const sync = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); };
+      el.addEventListener('input', sync);
+      sync();
+    };
+    bind('visc', 'visc-val', v => v.toFixed(2), v => state.visc = v);
+    bind('force', 'force-val', v => v.toFixed(2), v => state.force = v);
+    bind('rain', 'rain-val', v => v.toFixed(2), v => state.rain = v);
+    bind('evap', 'evap-val', v => v.toFixed(3), v => state.evap = v);
+    bind('op', 'op-val', v => v.toFixed(2), v => state.op = v);
+    document.getElementById('reset').addEventListener('click', () => resetWater());
+    document.getElementById('reloadDem').addEventListener('click', async () => {
+      await loadDemAtCenter();
+      resetWater();
+    });
+
+    // -------- Loop --------
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(r.width * dpr));
+      const h = Math.max(1, Math.floor(r.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+
+    function stepSim(iterations) {
+      const omega = 1.0 / (3.0 * state.visc + 0.5); // tau = 3nu+0.5, omega=1/tau
+      for (let i = 0; i < iterations; i++) {
+        gl.useProgram(progStep);
+        gl.bindVertexArray(vao);
+        gl.viewport(0, 0, N, N);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, ping ? fbB : fbA);
+
+        const src0 = ping ? f0a : f0b;
+        const src1 = ping ? f1a : f1b;
+        const src2 = ping ? f2a : f2b;
+
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, src1);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, src2);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, demTex);
+        gl.uniform1i(gl.getUniformLocation(progStep, 'uF0'), 0);
+        gl.uniform1i(gl.getUniformLocation(progStep, 'uF1'), 1);
+        gl.uniform1i(gl.getUniformLocation(progStep, 'uF2'), 2);
+        gl.uniform1i(gl.getUniformLocation(progStep, 'uDem'), 3);
+        gl.uniform2f(gl.getUniformLocation(progStep, 'uRes'), N, N);
+        gl.uniform2f(gl.getUniformLocation(progStep, 'uDemRes'), demCanvas.width, demCanvas.height);
+        gl.uniform1f(gl.getUniformLocation(progStep, 'uOmega'), omega);
+        gl.uniform1f(gl.getUniformLocation(progStep, 'uForceK'), state.force * 0.00008);
+        gl.uniform1f(gl.getUniformLocation(progStep, 'uRain'), state.rain);
+        gl.uniform1f(gl.getUniformLocation(progStep, 'uEvap'), state.evap);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        ping = !ping;
+      }
+    }
+
+    function render() {
+      gl.useProgram(progRender);
+      gl.bindVertexArray(vao);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.clearColor(0,0,0,0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      const src0 = ping ? f0a : f0b;
+      const src1 = ping ? f1a : f1b;
+      const src2 = ping ? f2a : f2b;
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, src1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, src2);
+      gl.uniform1i(gl.getUniformLocation(progRender, 'uF0'), 0);
+      gl.uniform1i(gl.getUniformLocation(progRender, 'uF1'), 1);
+      gl.uniform1i(gl.getUniformLocation(progRender, 'uF2'), 2);
+      gl.uniform1f(gl.getUniformLocation(progRender, 'uOpacity'), state.op);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    function frame() {
+      resize();
+      if (demTex) {
+        if (state.run) stepSim(10);
+        render();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    map.on('load', async () => {
+      allocSim();
+      await loadDemAtCenter();
+      resetWater();
+      frame();
+    });
+  </script>
+</body>
+</html>
+

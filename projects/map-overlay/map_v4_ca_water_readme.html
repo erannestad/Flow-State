@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CA Water Runoff README</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f14;
+      --panel: rgba(20,20,20,0.86);
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --border: rgba(255,255,255,0.14);
+      --link: #8ab4f8;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(1200px 700px at 30% 0%, rgba(90,140,255,0.14), transparent 60%),
+                  radial-gradient(900px 600px at 70% 30%, rgba(255,120,120,0.10), transparent 60%),
+                  var(--bg);
+      color: var(--text);
+    }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 28px 18px 60px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px 18px;
+      backdrop-filter: blur(8px);
+    }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 18px 0 8px; }
+    p, li { font-size: 13px; line-height: 1.5; color: var(--text); }
+    .muted { color: var(--muted); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>CA water runoff <span class="pill">`map_v4_ca_water.html`</span></h1>
+      <p class="muted">
+        A simple, stable “height + water” cellular automaton over a MapLibre map, driven by Terrarium DEM tiles.
+      </p>
+
+      <h2>What you’re looking at</h2>
+      <ul>
+        <li><b>Terrain</b>: a Terrarium DEM mosaic (currently 5×5 tiles) is loaded around the map center at a fixed zoom level.</li>
+        <li><b>Grid</b>: the simulation runs on an <code>N×N</code> grid (the <b>Grid</b> slider). Each cell stores a water amount <code>W</code>.</li>
+        <li><b>Mapping</b>: each CA cell corresponds to a screen position; that screen position is unprojected to lon/lat and then converted into DEM pixel space.</li>
+        <li><b>Valid mask</b>: cells outside the DEM mosaic are marked invalid and don’t simulate (render transparent). This avoids edge “clamp” artifacts.</li>
+      </ul>
+
+      <div class="grid">
+        <div>
+          <h2>State</h2>
+          <ul>
+            <li><code>H</code>: terrain height (meters), sampled from the DEM for each cell.</li>
+            <li><code>W</code>: water amount (unitless mass), per cell.</li>
+          </ul>
+        </div>
+        <div>
+          <h2>Rendering</h2>
+          <ul>
+            <li>Cells are colored by a heatmap ramp based on <code>W</code> (with a soft-saturating scale).</li>
+            <li>When “Debug cells” is enabled, it draws per-cell values of <code>W</code> (slow on large grids).</li>
+            <li>When zoomed in, it switches to nearest-neighbor sampling to reduce moiré/scanline artifacts.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h2>Dynamics (the CA rule)</h2>
+      <p>
+        Each step, every valid cell gets rainfall and then redistributes some of its water to lower neighbors.
+      </p>
+      <ul>
+        <li><b>Rain</b>: every step adds baseline rain to each cell. With oscillation enabled, the rain level is
+          <code>max(0, Rain + RainAmp·sin(2π·t/RainPeriod))</code>. The bottom-right bar shows “Rain now”.</li>
+        <li><b>Flow routing</b>: water is routed downhill based on <code>H</code> (terrain height), not <code>H+W</code>.</li>
+        <li><b>Neighborhood</b>: a radius <code>R</code> neighborhood (3×3 up to 9×9) is used. Lower cells within radius receive water proportional to <code>(drop / distance)</code>.</li>
+        <li><b>Pooling bias</b>: outflow is reduced in flatter areas using a “steepness” factor so low valleys can retain more water.</li>
+        <li><b>Evap</b>: after redistribution, water is multiplied by <code>(1 - Evap)</code>.</li>
+      </ul>
+
+      <h2>Brush rain</h2>
+      <ul>
+        <li>Click <b>Brush</b> near the rain meter to open the brush popout.</li>
+        <li>Enabling the brush disables map interactions so click-drag paints water cleanly.</li>
+        <li><b>Brush size</b>: radius in cells.</li>
+        <li><b>Amount</b>: how strongly water is added under the brush (with radial falloff).</li>
+      </ul>
+
+      <h2>Controls & tips</h2>
+      <ul>
+        <li><b>Reset water</b>: equalizes <code>W</code> across all valid cells (uniform starting state).</li>
+        <li><b>Reload DEM</b>: reloads the DEM mosaic around the current map center (use after big pans).</li>
+        <li><b>d</b>: toggles slope debug visualization.</li>
+        <li>If you see artifacts at the edges, it usually means you’ve panned outside the currently loaded DEM mosaic—hit <b>Reload DEM</b>.</li>
+      </ul>
+
+      <p class="muted">
+        Back to the sim: <a href="./map_v4_ca_water.html">`map_v4_ca_water.html`</a>
+      </p>
+    </div>
+  </div>
+</body>
+</html>
+

@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Eric Flow - Stream Table (GPU Particles)</title>
+  <link rel="stylesheet" href="./assets/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    #sidebar {
+      position: absolute; top: 0; left: 0; bottom: 0; width: 320px;
+      z-index: 10; display: flex; flex-direction: column;
+      background: #202124; color: #e8eaed;
+      border-right: 1px solid #3c4043;
+      transition: left 0.25s ease;
+    }
+    #sidebar.collapsed { left: -320px; }
+    #map { position: absolute; top: 0; bottom: 0; left: 320px; right: 0; transition: left 0.25s ease; }
+    #sidebar.collapsed ~ #map { left: 0; }
+
+    #collapse-btn {
+      position: absolute; top: 10px; z-index: 12;
+      left: 320px; transition: left 0.25s ease;
+      width: 24px; height: 48px; background: rgba(30,30,30,0.85);
+      border: 1px solid rgba(255,255,255,0.15); border-radius: 0 6px 6px 0;
+      color: #ccc; font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #sidebar.collapsed ~ #collapse-btn { left: 0; }
+
+    /* GPU particle canvas overlays the map */
+    #particle-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 3;
+      mix-blend-mode: screen;
+    }
+
+    .panel {
+      display: flex; flex-direction: column; height: 100%;
+    }
+    .hdr {
+      padding: 14px 16px 10px; border-bottom: 1px solid #3c4043;
+      font-size: 14px; font-weight: 600;
+      display:flex; align-items:center; justify-content: space-between;
+    }
+    .body { flex: 1 1 0; overflow:auto; padding: 12px 12px 18px; }
+    .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    .row label { width: 110px; font-size: 11px; color: #9aa0a6; }
+    .row input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    .val { width: 44px; text-align:right; font-size: 11px; color: #e8eaed; }
+    .toggle { display:flex; align-items:center; gap: 8px; padding: 10px 0; }
+    .toggle input { accent-color: #8ab4f8; }
+    .btn {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid #5f6368;
+      background: #303134;
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    .btn:hover { background: #3c4043; }
+    .note { color:#9aa0a6; font-size: 11px; line-height: 1.35; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div class="panel">
+      <div class="hdr">
+        <span>Stream Table <span style="opacity:.6;font-weight:500">GPU</span></span>
+        <span style="font-size:11px;color:#5f6368">v02</span>
+      </div>
+      <div class="body">
+        <div class="toggle">
+          <input type="checkbox" id="sim-toggle" checked>
+          <label for="sim-toggle" style="width:auto;color:#e8eaed;font-size:12px;">Sim active</label>
+        </div>
+
+        <div class="row">
+          <label>Flow</label>
+          <input type="range" id="flow" min="0" max="3" step="0.05" value="0.45">
+          <div class="val" id="flow-val">0.45</div>
+        </div>
+        <div class="row">
+          <label>Damping</label>
+          <input type="range" id="damp" min="0.70" max="0.995" step="0.005" value="0.90">
+          <div class="val" id="damp-val">0.90</div>
+        </div>
+        <div class="row">
+          <label>Turbulence</label>
+          <input type="range" id="turb" min="0" max="0.20" step="0.005" value="0.02">
+          <div class="val" id="turb-val">0.02</div>
+        </div>
+        <div class="row">
+          <label>Particle size</label>
+          <input type="range" id="psize" min="1" max="6" step="0.5" value="2.0">
+          <div class="val" id="psize-val">2.0</div>
+        </div>
+        <div class="row">
+          <label>Count</label>
+          <input type="range" id="pcount" min="10000" max="300000" step="5000" value="120000">
+          <div class="val" id="pcount-val">120k</div>
+        </div>
+        <button class="btn" id="reset">Respawn</button>
+
+        <div class="note">
+          This version updates particle positions on the GPU (ping‑pong float textures).
+          Map drag/zoom is applied as a uniform transform so particles stay visually “attached”
+          while you move the map.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button id="collapse-btn" title="Collapse sidebar">◂</button>
+  <div id="map"></div>
+  <canvas id="particle-canvas"></canvas>
+
+  <script src="./assets/maplibre-gl.js"></script>
+  <script type="module">
+    const sidebar = document.getElementById('sidebar');
+    const collapseBtn = document.getElementById('collapse-btn');
+    collapseBtn.addEventListener('click', () => {
+      sidebar.classList.toggle('collapsed');
+      collapseBtn.innerHTML = sidebar.classList.contains('collapsed') ? '&#9656;' : '&#9666;';
+      setTimeout(() => map.resize(), 260);
+    });
+
+    // --- MapLibre map ---
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          'base': {
+            type: 'raster',
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
+          }
+        },
+        layers: [{ id: 'base', type: 'raster', source: 'base' }]
+      },
+      center: [-105.67, 33.33],
+      zoom: 13
+    });
+
+    // --- GPU particles on overlay canvas (WebGL2) ---
+    const canvas = document.getElementById('particle-canvas');
+    /** @type {WebGL2RenderingContext|null} */
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: false, antialias: false });
+    if (!gl) {
+      alert('WebGL2 not available. This GPU version requires WebGL2.');
+      throw new Error('WebGL2 not available');
+    }
+
+    // Basic error surfacing (so failures aren’t silent)
+    window.addEventListener('error', (e) => {
+      console.error(e.error || e.message);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      console.error(e.reason);
+    });
+
+    // Extensions for float/half-float color attachments (Safari often needs half-float)
+    const extColorBufferFloat = gl.getExtension('EXT_color_buffer_float');
+    const extColorBufferHalfFloat = gl.getExtension('EXT_color_buffer_half_float');
+    const halfFloatType = gl.HALF_FLOAT; // WebGL2 built-in enum
+
+    // --- UI state ---
+    const state = {
+      sim: true,
+      flow: 0.45,
+      damp: 0.90,
+      turb: 0.02,
+      psize: 2.0,
+      count: 120000
+    };
+
+    // Rebuild flag is used by UI callbacks; define it early.
+    let needsRebuild = true;
+    function scheduleRebuild() { needsRebuild = true; }
+
+    function bindSlider(id, outId, fmt, setter) {
+      const el = document.getElementById(id);
+      const out = document.getElementById(outId);
+      const sync = () => {
+        const v = parseFloat(el.value);
+        setter(v);
+        out.textContent = fmt(v);
+      };
+      el.addEventListener('input', sync);
+      sync();
+    }
+
+    document.getElementById('sim-toggle').addEventListener('change', (e) => state.sim = e.target.checked);
+    bindSlider('flow', 'flow-val', v => v.toFixed(2), v => state.flow = v);
+    bindSlider('damp', 'damp-val', v => v.toFixed(2), v => state.damp = v);
+    bindSlider('turb', 'turb-val', v => v.toFixed(2), v => state.turb = v);
+    bindSlider('psize', 'psize-val', v => v.toFixed(1), v => state.psize = v);
+    bindSlider('pcount', 'pcount-val', v => (v/1000|0) + 'k', v => { state.count = v|0; scheduleRebuild(); });
+    document.getElementById('reset').addEventListener('click', () => respawn());
+
+    // --- GL helpers ---
+    function compile(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const msg = gl.getShaderInfoLog(s) || 'shader compile failed';
+        gl.deleteShader(s);
+        throw new Error(msg);
+      }
+      return s;
+    }
+    function program(vsSrc, fsSrc) {
+      const p = gl.createProgram();
+      gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+      gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        const msg = gl.getProgramInfoLog(p) || 'program link failed';
+        gl.deleteProgram(p);
+        throw new Error(msg);
+      }
+      return p;
+    }
+
+    const quadVSSrc = `#version 300 es
+    precision highp float;
+    out vec2 vUv;
+    void main() {
+      vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+      vUv = p;
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    }`;
+
+    // Update pass: reads pos/vel, applies flow + damping + turbulence, plus pan/zoom compensation.
+    const updateFSSrc = `#version 300 es
+    precision highp float;
+    uniform sampler2D uPos;
+    uniform sampler2D uVel;
+    uniform vec2 uTexRes;
+    uniform vec2 uCanvasRes;
+    uniform float uFlow;
+    uniform float uDamp;
+    uniform float uTurb;
+    uniform float uDt;
+    uniform vec2 uPan;       // pixels to add (map drag)
+    uniform float uZoomScale; // scale around uZoomCenter (map zoom)
+    uniform vec2 uZoomCenter;
+    uniform float uSeed;
+    layout(location=0) out vec4 outPos;
+    layout(location=1) out vec4 outVel;
+
+    // Cheap hash
+    float hash(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    vec2 rand2(vec2 p) {
+      float n = hash(p + uSeed);
+      return vec2(n, hash(p + n + 0.37)) * 2.0 - 1.0;
+    }
+
+    // "Terrain-ish" flow: follow the downhill direction of a smooth scalar field.
+    // This avoids the global left->right bias and yields more dendritic paths.
+    float heightField(vec2 p) {
+      vec2 q = p / 220.0;
+      float h =
+        0.70 * sin(q.x * 1.1) * cos(q.y * 0.9) +
+        0.35 * sin(q.x * 2.1 + 1.7) +
+        0.25 * cos(q.y * 2.6 - 0.3) +
+        0.18 * sin((q.x + q.y) * 1.7);
+      return h;
+    }
+    vec2 flowField(vec2 p) {
+      float e = 2.0; // pixels for finite diff
+      float hC = heightField(p);
+      float hR = heightField(p + vec2(e, 0.0));
+      float hL = heightField(p - vec2(e, 0.0));
+      float hU = heightField(p - vec2(0.0, e));
+      float hD = heightField(p + vec2(0.0, e));
+      vec2 grad = vec2(hR - hL, hD - hU) / (2.0 * e);
+      vec2 v = -grad;
+      float m = length(v);
+      if (m < 1e-5) return vec2(0.0);
+      return v / m;
+    }
+
+    void main() {
+      vec2 uv = gl_FragCoord.xy / uTexRes;
+      vec4 p4 = texture(uPos, uv);
+      vec4 v4 = texture(uVel, uv);
+      vec2 p = p4.xy;
+      vec2 v = v4.xy;
+
+      // Apply map movement compensation so particles move with the map.
+      p += uPan;
+      p = (p - uZoomCenter) * uZoomScale + uZoomCenter;
+
+      // Accumulate velocity from "terrain" vector field (no initial kick needed).
+      vec2 fv = flowField(p) * uFlow;
+      v += fv * uDt * 60.0;
+
+      // Optional turbulence
+      if (uTurb > 0.0) {
+        v += rand2(p + uv * 1000.0) * uTurb;
+      }
+
+      // Damping
+      v *= pow(uDamp, uDt * 60.0);
+      p += v * uDt * 60.0;
+
+      // Respawn only when *very* far out of bounds (longer visible lifetime)
+      if (p.x < -2.0*uCanvasRes.x || p.x > 3.0*uCanvasRes.x || p.y < -2.0*uCanvasRes.y || p.y > 3.0*uCanvasRes.y) {
+        vec2 r = rand2(uv * 999.0 + uSeed);
+        p = vec2((r.x*0.5+0.5) * uCanvasRes.x, (r.y*0.5+0.5) * uCanvasRes.y);
+        v = vec2(0.0);
+      }
+
+      outPos = vec4(p, 0.0, 1.0);
+      outVel = vec4(v, 0.0, 1.0);
+    }`;
+
+    // Render pass: draw points by sampling positions texture.
+    const renderVSSrc = `#version 300 es
+    precision highp float;
+    uniform sampler2D uPos;
+    uniform vec2 uTexRes;
+    uniform vec2 uCanvasRes;
+    uniform float uPointSize;
+    out float vAlpha;
+    void main() {
+      int id = gl_VertexID;
+      int w = int(uTexRes.x);
+      int x = id % w;
+      int y = id / w;
+      vec2 uv = (vec2(float(x), float(y)) + 0.5) / uTexRes;
+      vec2 p = texture(uPos, uv).xy;
+      vec2 ndc = (p / uCanvasRes) * 2.0 - 1.0;
+      ndc.y *= -1.0;
+      gl_Position = vec4(ndc, 0.0, 1.0);
+      gl_PointSize = uPointSize;
+      vAlpha = 0.7;
+    }`;
+
+    const renderFSSrc = `#version 300 es
+    precision highp float;
+    in float vAlpha;
+    out vec4 outColor;
+    void main() {
+      // Soft round points
+      vec2 c = gl_PointCoord - 0.5;
+      float d = dot(c, c);
+      float a = smoothstep(0.25, 0.0, d) * vAlpha;
+      outColor = vec4(0.2, 0.65, 1.0, a);
+    }`;
+
+    const updateProg = program(quadVSSrc, updateFSSrc);
+    const renderProg = program(renderVSSrc, renderFSSrc);
+
+    // Textures + FBOs (ping-pong)
+    let texRes = 0;
+    let texPosA, texVelA, texPosB, texVelB;
+    let fboA, fboB;
+    let vaoQuad = gl.createVertexArray();
+    let vaoPts = gl.createVertexArray();
+    // needsRebuild declared above (UI section)
+
+    // Pick texture format that can actually be rendered to.
+    // Prefer RGBA16F (half-float) for broad compatibility; use RGBA32F if supported.
+    let simTexInternalFormat = gl.RGBA16F;
+    let simTexType = halfFloatType;
+    if (extColorBufferFloat) {
+      // We'll still sanity-check with an FBO probe below; some platforms expose the ext but fail in practice.
+      simTexInternalFormat = gl.RGBA32F;
+      simTexType = gl.FLOAT;
+    }
+
+    function makeTex(w, h) {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, simTexInternalFormat, w, h, 0, gl.RGBA, simTexType, null);
+      return t;
+    }
+
+    function makeFbo(posTex, velTex) {
+      const f = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, posTex, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, velTex, 0);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (!ok) throw new Error('FBO incomplete (color buffer float/half-float not supported?)');
+      return f;
+    }
+
+    function probeSimFormats() {
+      // Try current choice; if it fails and we were on 32F, fall back to 16F.
+      try {
+        const t0 = makeTex(2, 2);
+        const t1 = makeTex(2, 2);
+        const f = makeFbo(t0, t1);
+        gl.deleteFramebuffer(f);
+        gl.deleteTexture(t0);
+        gl.deleteTexture(t1);
+        return;
+      } catch (e) {
+        if (simTexInternalFormat === gl.RGBA32F) {
+          if (!extColorBufferHalfFloat) throw e;
+          simTexInternalFormat = gl.RGBA16F;
+          simTexType = halfFloatType;
+          // Re-probe
+          const t0 = makeTex(2, 2);
+          const t1 = makeTex(2, 2);
+          const f = makeFbo(t0, t1);
+          gl.deleteFramebuffer(f);
+          gl.deleteTexture(t0);
+          gl.deleteTexture(t1);
+          return;
+        }
+        throw e;
+      }
+    }
+
+    probeSimFormats();
+
+    // scheduleRebuild declared above (UI section)
+
+    function rebuildIfNeeded() {
+      if (!needsRebuild) return;
+      needsRebuild = false;
+
+      const n = Math.max(1, state.count | 0);
+      texRes = Math.ceil(Math.sqrt(n));
+      // (re)alloc
+      texPosA = makeTex(texRes, texRes);
+      texVelA = makeTex(texRes, texRes);
+      texPosB = makeTex(texRes, texRes);
+      texVelB = makeTex(texRes, texRes);
+      fboA = makeFbo(texPosA, texVelA);
+      fboB = makeFbo(texPosB, texVelB);
+
+      // VAOs
+      gl.bindVertexArray(vaoQuad);
+      gl.bindVertexArray(null);
+      gl.bindVertexArray(vaoPts);
+      gl.bindVertexArray(null);
+
+      respawn();
+    }
+
+    function respawn() {
+      rebuildIfNeeded();
+      // Fill pos/vel textures with random screen-space positions and zero velocities.
+      const w = texRes, h = texRes;
+      const total = w * h;
+      const pos = new Float32Array(total * 4);
+      const vel = new Float32Array(total * 4);
+      const cw = canvas.width, ch = canvas.height;
+      for (let i = 0; i < total; i++) {
+        // spawn uniformly inside expanded rect [-0.5W,1.5W] × [-0.5H,1.5H]
+        pos[i*4+0] = (Math.random() * 2 - 0.5) * cw;
+        pos[i*4+1] = (Math.random() * 2 - 0.5) * ch;
+        pos[i*4+2] = 0;
+        pos[i*4+3] = 1;
+        vel[i*4+0] = 0;
+        vel[i*4+1] = 0;
+        vel[i*4+2] = 0;
+        vel[i*4+3] = 1;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, texPosA);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, simTexType, pos);
+      gl.bindTexture(gl.TEXTURE_2D, texVelA);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, simTexType, vel);
+      gl.bindTexture(gl.TEXTURE_2D, texPosB);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, simTexType, pos);
+      gl.bindTexture(gl.TEXTURE_2D, texVelB);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, simTexType, vel);
+    }
+
+    // Track map movement to compensate particle field in screen space
+    let prevCenterLngLat = null;
+    let prevZoom = null;
+    function computeMapDeltas() {
+      const centerNow = map.getCenter();
+      const zoomNow = map.getZoom();
+      const canvasCenter = [canvas.width * 0.5, canvas.height * 0.5];
+
+      // Project the *previous* center into the *current* view to measure how much the map moved in screen pixels.
+      if (!prevCenterLngLat) {
+        prevCenterLngLat = centerNow;
+        prevZoom = zoomNow;
+        return { pan: [0, 0], zoomScale: 1, zoomCenter: canvasCenter };
+      }
+
+      const prevCenterNowPx = map.project(prevCenterLngLat);
+      // We want to shift particles so they remain attached to the map content:
+      // If the old center appears left of screen center, we move particles right, etc.
+      const pan = [canvasCenter[0] - prevCenterNowPx.x, canvasCenter[1] - prevCenterNowPx.y];
+
+      // Approx zoom compensation around screen center
+      const zoomScale = Math.pow(2, zoomNow - prevZoom);
+
+      prevCenterLngLat = centerNow;
+      prevZoom = zoomNow;
+      return { pan, zoomScale, zoomCenter: canvasCenter };
+    }
+
+    let ping = true;
+    let lastT = performance.now();
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(r.width * dpr));
+      const h = Math.max(1, Math.floor(r.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        gl.viewport(0, 0, w, h);
+        // Reinitialize particle positions to match new canvas dimensions
+        respawn();
+      }
+    }
+
+    function update(dt, deltas) {
+      gl.useProgram(updateProg);
+      gl.bindVertexArray(vaoQuad);
+      gl.viewport(0, 0, texRes, texRes);
+
+      const srcPos = ping ? texPosA : texPosB;
+      const srcVel = ping ? texVelA : texVelB;
+      const dstFbo = ping ? fboB : fboA;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, srcPos);
+      gl.uniform1i(gl.getUniformLocation(updateProg, 'uPos'), 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, srcVel);
+      gl.uniform1i(gl.getUniformLocation(updateProg, 'uVel'), 1);
+
+      gl.uniform2f(gl.getUniformLocation(updateProg, 'uTexRes'), texRes, texRes);
+      gl.uniform2f(gl.getUniformLocation(updateProg, 'uCanvasRes'), canvas.width, canvas.height);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uFlow'), state.sim ? state.flow : 0.0);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uDamp'), state.damp);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uTurb'), state.turb);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uDt'), dt);
+      gl.uniform2f(gl.getUniformLocation(updateProg, 'uPan'), deltas.pan[0], deltas.pan[1]);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uZoomScale'), deltas.zoomScale);
+      gl.uniform2f(gl.getUniformLocation(updateProg, 'uZoomCenter'), deltas.zoomCenter[0], deltas.zoomCenter[1]);
+      gl.uniform1f(gl.getUniformLocation(updateProg, 'uSeed'), (performance.now() % 10000) / 10000);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      ping = !ping;
+    }
+
+    function render() {
+      gl.useProgram(renderProg);
+      gl.bindVertexArray(vaoPts);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      const srcPos = ping ? texPosA : texPosB;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, srcPos);
+      gl.uniform1i(gl.getUniformLocation(renderProg, 'uPos'), 0);
+      gl.uniform2f(gl.getUniformLocation(renderProg, 'uTexRes'), texRes, texRes);
+      gl.uniform2f(gl.getUniformLocation(renderProg, 'uCanvasRes'), canvas.width, canvas.height);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'uPointSize'), state.psize * (window.devicePixelRatio || 1));
+
+      const n = Math.min(state.count|0, texRes * texRes);
+      gl.drawArrays(gl.POINTS, 0, n);
+    }
+
+    function frame() {
+      resize();
+      rebuildIfNeeded();
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastT) / 1000);
+      lastT = now;
+      const deltas = computeMapDeltas();
+      update(dt, deltas);
+      render();
+      requestAnimationFrame(frame);
+    }
+
+    map.on('load', () => {
+      // keep canvas aligned with map container
+      const mapEl = map.getContainer();
+      const placeCanvas = () => {
+        const r = mapEl.getBoundingClientRect();
+        canvas.style.left = r.left + 'px';
+        canvas.style.top = r.top + 'px';
+      };
+      // canvas is positioned absolute in page; just ensure it covers viewport
+      frame();
+    });
+
+    window.addEventListener('resize', () => {
+      // resize handled inside frame()
+    });
+  </script>
+</body>
+</html>
+

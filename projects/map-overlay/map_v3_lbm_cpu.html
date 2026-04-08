@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Water Flow (CPU LBM + DEM)</title>
+  <link rel="stylesheet" href="./assets/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { position: absolute; inset: 0; }
+    #overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 3;
+      mix-blend-mode: screen;
+    }
+    #hud {
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(20,20,20,0.86);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 12px;
+      min-width: 320px;
+      color: #e8eaed;
+      backdrop-filter: blur(6px);
+    }
+    #hud .title { display:flex; align-items:baseline; gap: 10px; }
+    #hud .title .name { font-weight: 700; font-size: 13px; }
+    #hud .title .sub { font-size: 11px; color:#9aa0a6; }
+    #hud .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #hud label { width: 94px; font-size: 11px; color:#9aa0a6; }
+    #hud input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #hud .val { width: 64px; text-align:right; font-size: 11px; color:#e8eaed; }
+    #hud .tog { display:flex; align-items:center; gap: 8px; padding-top: 8px; }
+    #hud .tog input { accent-color: #8ab4f8; }
+    #hud .btns { display:flex; gap: 8px; margin-top: 8px; }
+    #hud button {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(48,49,52,0.9);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #hud button:hover { background: rgba(60,64,67,0.95); }
+    #hud .hint { margin-top: 8px; font-size: 11px; color:#9aa0a6; line-height: 1.35; }
+    #hud .err { margin-top: 8px; font-size: 11px; color:#ffb4ab; display:none; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+  <div id="hud">
+    <div class="title">
+      <div class="name">LBM water sheet</div>
+      <div class="sub">CPU prototype • D2Q9 • DEM slope force</div>
+    </div>
+
+    <div class="tog">
+      <input type="checkbox" id="run" checked>
+      <label for="run" style="width:auto;color:#e8eaed;font-size:12px;">Run</label>
+    </div>
+
+    <div class="row">
+      <label>Grid</label>
+      <input type="range" id="grid" min="96" max="320" step="16" value="192">
+      <div class="val" id="grid-val">192</div>
+    </div>
+    <div class="row">
+      <label>Viscosity</label>
+      <input type="range" id="visc" min="0.01" max="0.20" step="0.005" value="0.06">
+      <div class="val" id="visc-val">0.06</div>
+    </div>
+    <div class="row">
+      <label>Slope force</label>
+      <input type="range" id="force" min="0" max="6" step="0.05" value="1.2">
+      <div class="val" id="force-val">1.20</div>
+    </div>
+    <div class="row">
+      <label>Rain</label>
+      <input type="range" id="rain" min="0" max="3" step="0.05" value="0.80">
+      <div class="val" id="rain-val">0.80</div>
+    </div>
+    <div class="row">
+      <label>Evap</label>
+      <input type="range" id="evap" min="0" max="0.03" step="0.001" value="0.002">
+      <div class="val" id="evap-val">0.002</div>
+    </div>
+    <div class="row">
+      <label>Opacity</label>
+      <input type="range" id="op" min="0" max="1" step="0.02" value="0.70">
+      <div class="val" id="op-val">0.70</div>
+    </div>
+    <div class="row">
+      <label>Steps/frame</label>
+      <input type="range" id="steps" min="1" max="20" step="1" value="6">
+      <div class="val" id="steps-val">6</div>
+    </div>
+
+    <div class="btns">
+      <button id="reset">Reset water</button>
+      <button id="reloadDem">Reload DEM</button>
+    </div>
+
+    <div class="hint">
+      CPU baseline to validate behavior. Once this looks right, we’ll port the same D2Q9 update to GPU ping‑pong textures.
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <script src="./assets/maplibre-gl.js"></script>
+  <script type="module">
+    // -------- Map --------
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          base: {
+            type: 'raster',
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
+          }
+        },
+        layers: [{ id: 'base', type: 'raster', source: 'base' }]
+      },
+      center: [-105.67, 33.33],
+      zoom: 13
+    });
+
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const errEl = document.getElementById('err');
+    function setErr(msg) {
+      errEl.style.display = msg ? 'block' : 'none';
+      errEl.textContent = msg || '';
+    }
+
+    // -------- DEM (Terrarium mosaic) --------
+    const DEM_Z = 14;
+    const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
+    const TILE = 256;
+    const MOSAIC = 3;
+    const demCanvas = document.createElement('canvas');
+    demCanvas.width = TILE * MOSAIC;
+    demCanvas.height = TILE * MOSAIC;
+    const dem2d = demCanvas.getContext('2d');
+    let demHeights = null; // Float32Array in meters, size demW*demH
+    let tileOrigin = { x: 0, y: 0 };
+    let demOriginWorldPx = { x: 0, y: 0 }; // top-left of mosaic in world px at DEM_Z
+
+    function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
+    function latToTileY(lat, z) {
+      const r = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+
+    function worldPxFromLngLat(lng, lat, z) {
+      const n = 256 * (1 << z);
+      const x = (lng + 180) / 360 * n;
+      const sin = Math.sin(lat * Math.PI / 180);
+      const y = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * n;
+      return { x, y };
+    }
+
+    function decodeTerrarium(r, g, b) {
+      return (r * 256 + g + b / 256) - 32768;
+    }
+
+    async function loadDemAtCenter() {
+      setErr('');
+      const c = map.getCenter();
+      const tx = lonToTileX(c.lng, DEM_Z);
+      const ty = latToTileY(c.lat, DEM_Z);
+      tileOrigin = { x: tx - 1, y: ty - 1 };
+      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+
+      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      const jobs = [];
+      for (let j = 0; j < MOSAIC; j++) {
+        for (let i = 0; i < MOSAIC; i++) {
+          const x = tileOrigin.x + i;
+          const y = tileOrigin.y + j;
+          const url = `${DEM_URL}/${DEM_Z}/${x}/${y}.png`;
+          jobs.push(new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve({ img, i, j });
+            img.onerror = () => reject(new Error('DEM tile failed: ' + url));
+            img.src = url;
+          }));
+        }
+      }
+      const tiles = await Promise.all(jobs);
+      for (const t of tiles) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+
+      const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
+      const w = demCanvas.width, h = demCanvas.height;
+      const out = new Float32Array(w * h);
+      const d = img.data;
+      for (let i = 0; i < w * h; i++) {
+        out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
+      }
+      demHeights = out;
+    }
+
+    // Map screen pixel -> DEM uv inside our 3x3 mosaic at DEM_Z.
+    // Returns null if outside DEM mosaic coverage.
+    function demUvFromScreenPx(sx, sy) {
+      const ll = map.unproject([sx, sy]);
+      const wp = worldPxFromLngLat(ll.lng, ll.lat, DEM_Z);
+      const dx = wp.x - demOriginWorldPx.x;
+      const dy = wp.y - demOriginWorldPx.y;
+      const w = demCanvas.width, h = demCanvas.height;
+      if (dx < 0 || dy < 0 || dx >= w || dy >= h) return null;
+      return { u: dx / w, v: dy / h };
+    }
+
+    // Precompute sim-cell -> DEM uv mapping for the current view (fast + correct alignment).
+    let demUvMap = null; // Float32Array length 2*N*N, u,v per cell; -1 if out of bounds
+    let demUvDirty = true;
+    function rebuildDemUvMap() {
+      if (!demHeights) return;
+      demUvMap = new Float32Array(2 * N * N);
+      const cw = canvas.width, ch = canvas.height;
+      for (let y = 0; y < N; y++) {
+        const sy = (y / (N - 1)) * ch;
+        for (let x = 0; x < N; x++) {
+          const sx = (x / (N - 1)) * cw;
+          const uv = demUvFromScreenPx(sx, sy);
+          const k = (y * N + x) * 2;
+          if (!uv) { demUvMap[k] = -1; demUvMap[k + 1] = -1; }
+          else { demUvMap[k] = uv.u; demUvMap[k + 1] = uv.v; }
+        }
+      }
+      demUvDirty = false;
+    }
+
+    function sampleDemHeight(u, v) {
+      // u,v in [0,1]
+      if (!demHeights) return 0;
+      const w = demCanvas.width, h = demCanvas.height;
+      const x = Math.max(0, Math.min(w - 1, u * (w - 1)));
+      const y = Math.max(0, Math.min(h - 1, v * (h - 1)));
+      const xi = x | 0, yi = y | 0;
+      return demHeights[yi * w + xi];
+    }
+
+    function demGrad(u, v) {
+      // finite difference in DEM texture space
+      const eps = 1.0 / demCanvas.width;
+      const hx1 = sampleDemHeight(u + eps, v);
+      const hx0 = sampleDemHeight(u - eps, v);
+      const hy1 = sampleDemHeight(u, v + eps);
+      const hy0 = sampleDemHeight(u, v - eps);
+      return { gx: (hx1 - hx0) * 0.5, gy: (hy1 - hy0) * 0.5 };
+    }
+
+    // -------- LBM (CPU D2Q9) --------
+    // Directions (E,W,N,S,NE,NW,SE,SW) mapping:
+    // 0 rest
+    // 1 E, 2 W, 3 N, 4 S, 5 NE, 6 NW, 7 SE, 8 SW
+    const cx = new Int8Array([0, 1,-1, 0, 0, 1,-1, 1,-1]);
+    const cy = new Int8Array([0, 0, 0, 1,-1, 1, 1,-1,-1]);
+    const wts = new Float32Array([4/9, 1/9, 1/9, 1/9, 1/9, 1/36, 1/36, 1/36, 1/36]);
+    const opp = new Int8Array([0, 2, 1, 4, 3, 8, 7, 6, 5]);
+
+    let N = 192;
+    let fA = null, fB = null; // Float32Array length 9*N*N
+    let run = true;
+
+    const params = { visc: 0.06, force: 1.2, rain: 0.80, evap: 0.002, op: 0.70, steps: 6, debugSlope: false };
+
+    function idx(dir, x, y) { return (dir * N + y) * N + x; } // packed as [dir][y][x]
+    function alloc(n) {
+      N = n;
+      fA = new Float32Array(9 * N * N);
+      fB = new Float32Array(9 * N * N);
+      resetWater();
+    }
+
+    function feq(dir, rho, ux, uy) {
+      const cux = cx[dir] * ux + cy[dir] * uy;
+      const usq = ux*ux + uy*uy;
+      return wts[dir] * rho * (1 + 3*cux + 4.5*cux*cux - 1.5*usq);
+    }
+
+    function resetWater() {
+      // Small puddle in center
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          const dx = (x / (N-1) - 0.5) * 2;
+          const dy = (y / (N-1) - 0.5) * 2;
+          const r = Math.sqrt(dx*dx + dy*dy);
+          const rho = 1.0 + 0.35 * Math.max(0, (0.55 - r) / 0.55);
+          const ux = 0, uy = 0;
+          for (let d = 0; d < 9; d++) {
+            const v = feq(d, rho, ux, uy);
+            fA[idx(d,x,y)] = v;
+            fB[idx(d,x,y)] = v;
+          }
+        }
+      }
+    }
+
+    function stepOnce(src, dst, omega) {
+      // These are tuned so water persists visibly by default.
+      const evapMul = Math.max(0.90, Math.min(1, 1 - params.evap)); // keep from vanishing instantly
+      // Sustained rain: inject mass every step (distributed by lattice weights).
+      // This is more stable than only bumping rho during equilibrium calculation.
+      const rainMass = params.rain * 0.0030;
+      // Use DEM downhill *direction* (normalized). Magnitudes in meters/pixel are huge and unstable.
+      const forceK = params.force * 0.035; // applied as an acceleration direction in lattice units
+
+      // Streaming + collision (pull scheme)
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          // Pull streaming with solid (bounce-back) boundaries.
+          // This prevents the canvas edges from acting like a wrap-around “flow portal”.
+          const f0c = src[idx(0, x, y)];
+          const fEc = src[idx(1, x, y)];
+          const fWc = src[idx(2, x, y)];
+          const fNc = src[idx(3, x, y)];
+          const fSc = src[idx(4, x, y)];
+          const fNEc = src[idx(5, x, y)];
+          const fNWc = src[idx(6, x, y)];
+          const fSEc = src[idx(7, x, y)];
+          const fSWc = src[idx(8, x, y)];
+
+          const hasL = x > 0;
+          const hasR = x < N - 1;
+          const hasU = y > 0;
+          const hasD = y < N - 1;
+
+          const f0 = f0c;
+          const fE  = hasL ? src[idx(1, x - 1, y)] : fWc;
+          const fW  = hasR ? src[idx(2, x + 1, y)] : fEc;
+          const fN  = hasU ? src[idx(3, x, y - 1)] : fSc;
+          const fS  = hasD ? src[idx(4, x, y + 1)] : fNc;
+
+          const fNE = (hasL && hasU) ? src[idx(5, x - 1, y - 1)] : fSWc;
+          const fNW = (hasR && hasU) ? src[idx(6, x + 1, y - 1)] : fSEc;
+          const fSE = (hasL && hasD) ? src[idx(7, x - 1, y + 1)] : fNWc;
+          const fSW = (hasR && hasD) ? src[idx(8, x + 1, y + 1)] : fNEc;
+
+          let rho = f0 + fE + fW + fN + fS + fNE + fNW + fSE + fSW;
+          rho += rainMass;
+
+          // velocity
+          let ux = (fE - fW + fNE - fNW + fSE - fSW) / Math.max(rho, 1e-6);
+          let uy = (fN - fS + fNE + fNW - fSE - fSW) / Math.max(rho, 1e-6);
+
+          // DEM force: sample aligned DEM at uv = sim uv
+          const kuv = (y * N + x) * 2;
+          const u = demUvMap ? demUvMap[kuv] : -1;
+          const v = demUvMap ? demUvMap[kuv + 1] : -1;
+          const g = (u >= 0 && v >= 0) ? demGrad(u, v) : { gx: 0, gy: 0 };
+          // downhill direction
+          const gm = Math.hypot(g.gx, g.gy) || 0;
+          const dx = gm > 1e-6 ? (-g.gx / gm) : 0;
+          const dy = gm > 1e-6 ? (-g.gy / gm) : 0;
+          const Fx = forceK * dx;
+          const Fy = forceK * dy;
+          ux += 0.5 * Fx / Math.max(rho, 1e-6);
+          uy += 0.5 * Fy / Math.max(rho, 1e-6);
+
+          // Numerical safety: if anything blows up, reinitialize this cell near rest.
+          if (!Number.isFinite(rho) || !Number.isFinite(ux) || !Number.isFinite(uy) || rho <= 0) {
+            rho = 1.0 + rainMass;
+            ux = 0; uy = 0;
+          }
+          // Clamp velocity to avoid runaway instability (LBM is sensitive).
+          const umax = 0.25;
+          if (ux > umax) ux = umax;
+          else if (ux < -umax) ux = -umax;
+          if (uy > umax) uy = umax;
+          else if (uy < -umax) uy = -umax;
+
+          // collide toward equilibrium
+          for (let d = 0; d < 9; d++) {
+            const f = (d===0)?f0:(d===1)?fE:(d===2)?fW:(d===3)?fN:(d===4)?fS:(d===5)?fNE:(d===6)?fNW:(d===7)?fSE:fSW;
+            const fe = feq(d, rho, ux, uy);
+            // Add sustained rainfall as a mass source in the distributions.
+            let out = ((f + omega * (fe - f)) + wts[d] * rainMass) * evapMul;
+            if (!Number.isFinite(out) || out < 0) out = 0;
+            dst[idx(d,x,y)] = out;
+          }
+        }
+      }
+    }
+
+    const tmp = document.createElement('canvas');
+    let tctx = tmp.getContext('2d');
+
+    function renderField(src) {
+      // Draw rho to screen
+      const w = canvas.width, h = canvas.height;
+      const img = ctx.createImageData(N, N);
+      const data = img.data;
+
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          const f0 = src[idx(0,x,y)];
+          const fE = src[idx(1,x,y)];
+          const fW = src[idx(2,x,y)];
+          const fN = src[idx(3,x,y)];
+          const fS = src[idx(4,x,y)];
+          const fNE = src[idx(5,x,y)];
+          const fNW = src[idx(6,x,y)];
+          const fSE = src[idx(7,x,y)];
+          const fSW = src[idx(8,x,y)];
+          const rho = f0+fE+fW+fN+fS+fNE+fNW+fSE+fSW;
+          const rr = Number.isFinite(rho) ? rho : 1.0;
+          const wv = Math.max(0, rr - 1.0);
+          const a = Math.max(0, Math.min(1, wv * 6.0)) * params.op;
+
+          const i = (y * N + x) * 4;
+          // blue-ish
+          data[i] = (20 + 120 * Math.min(1, wv * 2)) | 0;
+          data[i+1] = (70 + 160 * Math.min(1, wv * 2)) | 0;
+          data[i+2] = (130 + 120 * Math.min(1, wv * 2)) | 0;
+          data[i+3] = (a * 255) | 0;
+        }
+      }
+
+      // Scale to full canvas
+      if (tmp.width !== N || tmp.height !== N) {
+        tmp.width = N; tmp.height = N;
+        tctx = tmp.getContext('2d');
+      }
+      tctx.putImageData(img, 0, 0);
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(tmp, 0, 0, w, h);
+    }
+
+    function renderSlopeDebug() {
+      if (!params.debugSlope || !demHeights) return;
+      const w = canvas.width, h = canvas.height;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 1;
+      const step = 18;
+      for (let sy = 0; sy <= h; sy += step) {
+        for (let sx = 0; sx <= w; sx += step) {
+          const uv = demUvFromScreenPx(sx, sy);
+          if (!uv) continue;
+          const g = demGrad(uv.u, uv.v);
+          const gm = Math.hypot(g.gx, g.gy) || 0;
+          if (gm < 1e-4) continue;
+          const dx = -g.gx / gm;
+          const dy = -g.gy / gm;
+          const len = 10;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx + dx * len, sy + dy * len);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // -------- UI wiring --------
+    document.getElementById('run').addEventListener('change', e => run = e.target.checked);
+    const bindR = (id, outId, fmt, set) => {
+      const el = document.getElementById(id);
+      const out = document.getElementById(outId);
+      const sync = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); };
+      el.addEventListener('input', sync);
+      sync();
+    };
+    bindR('grid', 'grid-val', v => String(v|0), v => alloc(v|0));
+    bindR('visc', 'visc-val', v => v.toFixed(2), v => params.visc = v);
+    bindR('force', 'force-val', v => v.toFixed(2), v => params.force = v);
+    bindR('rain', 'rain-val', v => v.toFixed(2), v => params.rain = v);
+    bindR('evap', 'evap-val', v => v.toFixed(3), v => params.evap = v);
+    bindR('op', 'op-val', v => v.toFixed(2), v => params.op = v);
+    bindR('steps', 'steps-val', v => String(v|0), v => params.steps = v|0);
+    // Debug slope overlay toggle (quick key: "d")
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'd') params.debugSlope = !params.debugSlope;
+    });
+    document.getElementById('reset').addEventListener('click', () => resetWater());
+    document.getElementById('reloadDem').addEventListener('click', async () => {
+      try {
+        await loadDemAtCenter();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(r.width * dpr));
+      const h = Math.max(1, Math.floor(r.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        demUvDirty = true;
+      }
+    }
+
+    function frame() {
+      resize();
+      if (demHeights && fA) {
+        if (demUvDirty || !demUvMap || demUvMap.length !== 2 * N * N) rebuildDemUvMap();
+        const omega = 1 / (3 * params.visc + 0.5);
+        if (run) {
+          for (let i = 0; i < params.steps; i++) {
+            stepOnce(fA, fB, omega);
+            const t = fA; fA = fB; fB = t;
+          }
+        }
+        renderField(fA);
+        renderSlopeDebug();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    map.on('load', async () => {
+      try {
+        alloc(N);
+        await loadDemAtCenter();
+        demUvDirty = true;
+        // When the map moves, the screen->DEM mapping changes.
+        map.on('move', () => { demUvDirty = true; });
+        frame();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<!-- saved from url=(0075)https://waldo.webdav.acequia.io:3334/gsd-vis-2487/eric/eric-flow-about.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About Eric Flow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    background: #1a1a1a; color: #e0e0e0; line-height: 1.7;
+    padding: 0; max-width: 100%; overflow-x: hidden;
+  }
+  .container {
+    max-width: 720px; margin: 0 auto; padding: 40px 32px 80px;
+  }
+  h1 {
+    font-size: 28px; font-weight: 600; color: #fff;
+    margin-bottom: 8px; letter-spacing: -0.5px;
+  }
+  h1 + p { font-size: 16px; color: #9aa0a6; margin-bottom: 32px; }
+  h2 {
+    font-size: 20px; font-weight: 600; color: #e8eaed;
+    margin-top: 48px; margin-bottom: 16px;
+    padding-bottom: 8px; border-bottom: 1px solid #333;
+  }
+  h3 {
+    font-size: 16px; font-weight: 600; color: #8ab4f8;
+    margin-top: 32px; margin-bottom: 12px;
+  }
+  p { margin-bottom: 16px; font-size: 15px; color: #ccc; }
+  a { color: #8ab4f8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #e8eaed; font-weight: 600; }
+  code {
+    background: #2d2d2d; color: #8ab4f8; padding: 2px 6px;
+    border-radius: 3px; font-size: 13px; font-family: 'SF Mono', Monaco, monospace;
+  }
+  .live-link {
+    display: inline-block; margin: 16px 0 8px;
+    padding: 10px 20px; background: #8ab4f8; color: #1a1a1a;
+    border-radius: 6px; font-weight: 600; font-size: 14px;
+    transition: background 0.15s;
+  }
+  .live-link:hover { background: #aecbfa; text-decoration: none; }
+  hr { border: none; border-top: 1px solid #333; margin: 40px 0; }
+  ul, ol { margin-bottom: 16px; padding-left: 24px; }
+  li { margin-bottom: 8px; font-size: 15px; color: #ccc; }
+  .layer-tree { margin: 16px 0 16px 8px; }
+  .layer-tree .folder {
+    font-weight: 600; color: #e8eaed; font-size: 15px; margin-bottom: 4px;
+  }
+  .layer-tree .layer {
+    color: #9aa0a6; font-size: 14px; padding-left: 20px; margin-bottom: 2px;
+  }
+  .concepts dt { font-weight: 600; color: #e8eaed; margin-top: 12px; }
+  .concepts dd { color: #ccc; margin-left: 0; margin-bottom: 8px; }
+  .data-table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    font-size: 14px;
+  }
+  .data-table td { padding: 6px 12px; border-bottom: 1px solid #2d2d2d; }
+  .data-table td:first-child { color: #9aa0a6; width: 120px; }
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+  .steps li {
+    counter-increment: step; padding-left: 32px; position: relative;
+    margin-bottom: 16px;
+  }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 22px; height: 22px; background: #333; color: #8ab4f8;
+    border-radius: 50%; font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .closing {
+    font-style: italic; color: #777; font-size: 13px;
+    margin-top: 40px; padding-top: 20px; border-top: 1px solid #333;
+  }
+  .closing p { color: #777; font-size: 13px; }
+  .verbs { display: inline-flex; gap: 6px; }
+  .verb {
+    background: #2d2d2d; color: #8ab4f8; padding: 2px 8px;
+    border-radius: 3px; font-size: 13px; font-family: monospace;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Eric Flow</h1>
+<p>Digital Stream Table</p>
+
+<p>A real-time particle simulation that traces how water flows downhill across actual terrain. Pan to any landscape on Earth, and watch drainage networks emerge from nothing but elevation data and gravity.</p>
+
+<p>Eric Flow is a browser-based counterpart to the physical stream tables used in geomorphology and hydrology courses — sand-and-water models where students pour water over sculpted terrain and observe where channels form. Here, the sand is replaced by 30-meter Terrarium elevation tiles from AWS, and the water is replaced by thousands of particles following gradient descent across the DEM.</p>
+
+
+<h2>How It Works</h2>
+
+<p>Elevation tiles are fetched from the Mapzen Terrarium dataset at the current map extent. Each pixel encodes elevation in meters via RGB channels. Particles spawn along the top and left edges of the viewport — simulating water entering from high-elevation boundaries — and each frame, every particle samples elevation in four cardinal directions and accelerates toward the steepest descent. A damping factor simulates friction. The result is emergent drainage: linear channel patterns appear without any explicit channel geometry in the code.</p>
+
+<p>Three particle size classes model sediment grain-size sorting in fluvial systems. <strong>Small particles</strong> (blue, 2px) have low inertia and follow every fine gradient. <strong>Medium particles</strong> (orange, 4px) carry moderate momentum. <strong>Large particles</strong> (pink, 6px) resist turning and travel straighter paths, analogous to coarse sediment transport.</p>
+
+<p>The heat map accumulates particle visits over time, functioning as a visual analog to flow accumulation rasters computed from DEMs in GIS. Colors ramp from blue (low) through green and yellow to red (peak flow). Adjusting the decay slider controls whether you see recent flow paths or cumulative drainage patterns.</p>
+
+<h2>Layer Tree</h2>
+
+<p>The interface is organized as a layer tree — a pattern borrowed from GIS and adapted here for interactive simulation control.</p>
+
+<div class="layer-tree">
+  <div class="folder">📂 Eric Flow</div>
+  <div class="layer">⚙ Particles — Flow Rate, Density, Damping, Particle Size</div>
+  <div class="layer">🌡️ Heat Map — toggleable, with Decay and Clear</div>
+  <div class="folder">📂 Elevation</div>
+  <div class="layer">⚙ Terrarium Elevation (30m) — Opacity, Color Ramp</div>
+</div>
+
+<p>All control state persists to localStorage and restores on reload.</p>
+
+<h2>View Modes</h2>
+
+<p>2D Map, 3D Terrain (with adjustable exaggeration), and Globe projection. Six basemaps from satellite imagery to topographic maps. In 3D Terrain mode, the elevation exaggeration reveals the relationship between particle flow patterns and the underlying landform.</p>
+
+<h2>Concepts Demonstrated</h2>
+
+<dl class="concepts">
+  <dt>Gradient descent</dt>
+  <dd>The same principle behind D8 and D-infinity flow routing algorithms. Each particle follows the local steepest-descent vector, producing realistic drainage without global path planning.</dd>
+  <dt>Flow accumulation</dt>
+  <dd>The heat map reveals where channels form and merge, replicating the core computation of hydrological GIS without ever running a formal flow accumulation algorithm.</dd>
+  <dt>Channel emergence</dt>
+  <dd>Linear drainage networks appear from simple local rules. No channels are drawn; they self-organize from particle trajectories.</dd>
+  <dt>Scale and resolution</dt>
+  <dd>Zooming in loads higher-resolution elevation tiles, revealing finer hydrological structure. Zooming out shows regional drainage basins.</dd>
+</dl>
+
+<h2>Data Sources</h2>
+
+<table class="data-table">
+  <tbody><tr><td>Elevation</td><td>Mapzen Terrarium tiles via AWS S3 (global, ~30m)</td></tr>
+  <tr><td>Basemaps</td><td>Esri World Imagery, CARTO, OpenStreetMap, OpenTopoMap</td></tr>
+  <tr><td>Rendering</td><td>MapLibre GL JS 5.18, 2D canvas overlay</td></tr>
+</tbody></table>
+
+<p>Self-contained HTML file, no build step, no dependencies beyond MapLibre. All computation is client-side. Maximum 5,000 particles; elevation tiles cached in memory.</p>
+
+<hr>
+
+<h2>How This Was Made</h2>
+<h3>Ambient Authority Editing</h3>
+
+<p>This simulation was authored collaboratively between a human and an AI (Claude), with the AI reading, modifying, and writing files directly on a live <a href="https://acequia.org/">Acequia</a> WebDAV server — using nothing but the user’s existing browser session for authentication.</p>
+
+<p>The pattern is described in detail at: <a href="https://simtable.acequia.io/people/guerin/sketches/ambient-authority-editing.md">ambient-authority-editing.md</a></p>
+
+<p>The core idea: the user is already authenticated to the Acequia server via a browser cookie. The AI, operating within that browser context, inherits that ambient authority. It can <code>GET</code> a file, modify its contents, and <code>PUT</code> it back — standard WebDAV verbs on the actual resource URL. No API key is exchanged. No OAuth flow is triggered. No credentials are visible to the AI. The URL is the file, and HTTP verbs are the edit operations.</p>
+
+<p>The collaboration unfolded as a series of conversational edits:</p>
+
+<ol class="steps">
+  <li>The original README told readers to “paste script tags into the browser console” — which doesn’t work. The AI explained the difference, then edited and saved the fix via <code>PUT</code>.</li>
+  <li>Play/pause button added, default map center moved to Ruidoso, NM. One fetch, one PUT.</li>
+  <li>Before destructive edits, the AI backed up the file using a WebDAV <code>COPY</code> — server-side copy, zero bytes transferred.</li>
+  <li>The Charlestown layer tree pattern was studied in a second browser tab, then rebuilt into eric-flow’s control panel with the same visual language.</li>
+  <li>Terrarium Elevation visualization added — reusing existing DEM data as a color-ramped canvas overlay.</li>
+  <li>Layer tree restructured into two top-level folders, control state wired to localStorage for persistence.</li>
+</ol>
+
+<p>Every edit happened live on the server. The AI never saw a password. The entire authoring workflow used three HTTP verbs — <span class="verbs"><span class="verb">GET</span><span class="verb">PUT</span><span class="verb">COPY</span></span> — that WebDAV has provided since 1999.</p>
+
+<h3>Why This Matters for Design</h3>
+
+<p>Technology is a landscape. The patterns we choose for how tools, data, and people connect shape what communities can build and observe. The Acequia platform treats files as URLs and authentication as ambient context — which means the threshold for collaborative making drops to nearly zero. An AI assistant, a student, a researcher, and a community modeler can all work on the same artifact, at the same URL, using the same verbs, without configuring anything.</p>
+
+<p>For landscape architecture students: this is what it looks like when the infrastructure disappears and the conversation becomes the design tool. The stream table is both the subject (a hydrological model) and the medium (a web document, edited in place, on a shared server, by a human-AI pair). The observation platform and the thing being observed are the same artifact.</p>
+
+<div class="closing">
+  <p>Eric Rannestad (hydrology model), Stephen Guerin (Acequia platform, Realtime.Earth), Claude/Anthropic (AI authoring).</p>
+  <p>Harvard GSD, STU-1212, Spring 2026.</p>
+  <p>Licensed under the Streamtable.org Acequia License.</p>
+</div>
+
+</div>
+
+</body></html>

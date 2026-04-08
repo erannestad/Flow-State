@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Water Flow (Simple CA + DEM)</title>
+  <link rel="stylesheet" href="./assets/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { position: absolute; inset: 0; }
+    #overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 3;
+      mix-blend-mode: screen;
+    }
+    #paintLayer {
+      position: absolute; inset: 0;
+      z-index: 6;
+      pointer-events: none;
+      cursor: crosshair;
+    }
+    #hud {
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(20,20,20,0.86);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 10px;
+      width: 280px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      color: #e8eaed;
+      backdrop-filter: blur(6px);
+    }
+    #hud::-webkit-scrollbar { width: 10px; }
+    #hud::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; }
+    #hud::-webkit-scrollbar-track { background: transparent; }
+    #hud .title { display:flex; align-items:baseline; gap: 10px; }
+    #hud .title .name { font-weight: 700; font-size: 13px; }
+    #hud .title .sub { font-size: 11px; color:#9aa0a6; }
+    #hud .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #hud label { width: 104px; font-size: 11px; color:#9aa0a6; }
+    #hud input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #hud .val { width: 70px; text-align:right; font-size: 11px; color:#e8eaed; }
+    #hud .tog { display:flex; align-items:center; gap: 8px; padding-top: 8px; }
+    #hud .tog input { accent-color: #8ab4f8; }
+    #hud .btns { display:flex; gap: 8px; margin-top: 8px; }
+    #hud button {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(48,49,52,0.9);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #hud button:hover { background: rgba(60,64,67,0.95); }
+    #hud .hint { margin-top: 8px; font-size: 11px; color:#9aa0a6; line-height: 1.35; }
+    #hud .err { margin-top: 8px; font-size: 11px; color:#ffb4ab; display:none; white-space: pre-wrap; }
+    #hud .hdr {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+    }
+    #hud .collapseBtn {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.85);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      flex: 0 0 auto;
+    }
+    #hud .collapseBtn:hover { background: rgba(60,64,67,0.95); }
+    #hud.collapsed {
+      width: 44px;
+      padding: 10px 6px;
+      overflow: hidden;
+    }
+    #hud.collapsed .content { display:none; }
+    #hud.collapsed .collapseBtn { width: 32px; height: 32px; border-radius: 12px; }
+    #hud.collapsed .title { display:none; }
+    #rainMeter {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      z-index: 11;
+      width: 36px;
+      height: 200px;
+      border-radius: 12px;
+      background: rgba(20,20,20,0.70);
+      border: 1px solid rgba(255,255,255,0.14);
+      backdrop-filter: blur(6px);
+      overflow: hidden;
+      pointer-events: auto;
+    }
+    #rainMeter .fill {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      height: 0%;
+      background: linear-gradient(180deg, rgba(255,80,80,0.95), rgba(255,210,80,0.95), rgba(60,200,255,0.95));
+    }
+    #rainMeter .label {
+      position: absolute;
+      left: 50%;
+      top: 6px;
+      transform: translateX(-50%);
+      font-size: 10px;
+      color: rgba(232,234,237,0.92);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+      font-variant-numeric: tabular-nums;
+      background: rgba(0,0,0,0.20);
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+    #brushBtnFloating {
+      position: absolute;
+      right: 12px;
+      bottom: 220px; /* 12px + 200px + 8px */
+      z-index: 12;
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.70);
+      color: rgba(232,234,237,0.95);
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      user-select: none;
+    }
+    #brushBtnFloating:hover { background: rgba(60,64,67,0.82); }
+
+    #brushPopover {
+      position: absolute;
+      right: 60px;
+      bottom: 12px;
+      z-index: 12;
+      width: 260px;
+      background: rgba(20,20,20,0.88);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 10px;
+      color: #e8eaed;
+      backdrop-filter: blur(6px);
+      display: none;
+    }
+    #brushPopover .hdr {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    #brushPopover .hdr .name { font-weight: 700; font-size: 12px; }
+    #brushPopover .closeBtn {
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.85);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      flex: 0 0 auto;
+    }
+    #brushPopover .closeBtn:hover { background: rgba(60,64,67,0.95); }
+    #brushPopover .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #brushPopover label { width: 104px; font-size: 11px; color:#9aa0a6; }
+    #brushPopover input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #brushPopover .val { width: 70px; text-align:right; font-size: 11px; color:#e8eaed; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+  <div id="paintLayer" aria-hidden="true"></div>
+  <button id="brushBtnFloating" title="Brush rain" aria-label="Brush rain">Brush</button>
+  <div id="rainMeter" aria-hidden="true">
+    <div class="fill" id="rainFill"></div>
+    <div class="label" id="rainNow">0.00</div>
+  </div>
+  <div id="brushPopover" role="dialog" aria-label="Brush options">
+    <div class="hdr">
+      <div class="name">Brush rain</div>
+      <button class="closeBtn" id="brushClose" title="Close" aria-label="Close">×</button>
+    </div>
+    <div class="row">
+      <label>Brush size</label>
+      <input type="range" id="brushSize" min="1" max="60" step="1" value="14">
+      <div class="val" id="brushSize-val">14</div>
+    </div>
+    <div class="row">
+      <label>Amount</label>
+      <input type="range" id="brushAmt" min="0" max="200" step="0.1" value="50">
+      <div class="val" id="brushAmt-val">50.0</div>
+    </div>
+    <div class="row">
+      <label style="width:auto;color:#e8eaed;">Enable brush</label>
+      <input type="checkbox" id="brushOn">
+      <div style="margin-left:auto;font-size:11px;color:#9aa0a6;">paint adds water</div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div class="hdr">
+      <div class="title">
+        <div class="name">CA water runoff</div>
+        <div class="sub">height + water • local downhill redistribution</div>
+      </div>
+      <button class="collapseBtn" id="hudToggle" title="Collapse/expand controls" aria-label="Collapse/expand controls">≡</button>
+    </div>
+
+    <div class="content">
+      <div class="tog">
+        <input type="checkbox" id="run" checked>
+        <label for="run" style="width:auto;color:#e8eaed;font-size:12px;">Run</label>
+        <span style="margin-left:auto;font-size:11px;color:#9aa0a6;">press <b>d</b> for slope debug</span>
+      </div>
+      <div class="tog" style="padding-top:6px;">
+        <input type="checkbox" id="debugCells">
+        <label for="debugCells" style="width:auto;color:#e8eaed;font-size:12px;">Debug cells (draw W)</label>
+        <span style="margin-left:auto;font-size:11px;color:#9aa0a6;">may be slow on big grids</span>
+      </div>
+
+    <div class="row">
+      <label>Grid</label>
+      <input type="range" id="grid" min="16" max="750" step="16" value="256">
+      <div class="val" id="grid-val">256</div>
+    </div>
+    <div class="row">
+      <label>Flow</label>
+        <input type="range" id="flow" min="0" max="1" step="0.01" value="0.50">
+        <div class="val" id="flow-val">0.50</div>
+    </div>
+    <div class="row">
+      <label>Neighborhood</label>
+      <input type="range" id="nbr" min="1" max="4" step="1" value="2">
+      <div class="val" id="nbr-val">2</div>
+    </div>
+    <div class="row">
+      <label>Rain</label>
+      <input type="range" id="rain" min="0" max="2" step="0.01" value="1.76">
+      <div class="val" id="rain-val">1.76</div>
+    </div>
+    <div class="row">
+      <label>Rain amp</label>
+      <input type="range" id="rainAmp" min="0" max="10" step="0.01" value="8.73">
+      <div class="val" id="rainAmp-val">8.73</div>
+    </div>
+    <div class="row">
+      <label>Rain period</label>
+      <input type="range" id="rainPeriod" min="10" max="6000" step="1" value="2324">
+      <div class="val" id="rainPeriod-val">2324</div>
+    </div>
+    <div class="row">
+      <label>Evap</label>
+      <input type="range" id="evap" min="0" max="0.05" step="0.001" value="0.001">
+      <div class="val" id="evap-val">0.001</div>
+    </div>
+    <div class="row">
+      <label>Steps/frame</label>
+      <input type="range" id="steps" min="1" max="30" step="1" value="3">
+      <div class="val" id="steps-val">3</div>
+    </div>
+    <div class="row">
+      <label>Opacity</label>
+      <input type="range" id="op" min="0" max="1" step="0.02" value="0.74">
+      <div class="val" id="op-val">0.74</div>
+    </div>
+
+    <div class="btns">
+      <button id="reset">Reset water</button>
+      <button id="reloadDem">Reload DEM</button>
+    </div>
+    <div class="hint">
+      This model keeps a water amount <code>W</code> per cell and redistributes a fraction downhill each step based on surface <code>S = H + W</code>.
+      Uses a 5×5 Terrarium mosaic. Only cells whose view ray hits that DEM footprint run the CA; outside stays transparent (no edge clamp — that caused straight “ray” streaks).
+      <span style="display:inline-block;margin-left:6px;">
+        <a href="./map_v4_ca_water_readme.html" target="_blank" rel="noopener" style="color:#8ab4f8;text-decoration:none;">README</a>
+      </span>
+    </div>
+      <div class="err" id="err"></div>
+    </div>
+  </div>
+
+  <script src="./assets/maplibre-gl.js"></script>
+  <script type="module">
+    // -------- Map --------
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          base: {
+            type: 'raster',
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
+          }
+        },
+        layers: [{ id: 'base', type: 'raster', source: 'base' }]
+      },
+      center: [-122.1997, 48.8139],
+      zoom: 14
+    });
+
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const errEl = document.getElementById('err');
+    function setErr(msg) {
+      errEl.style.display = msg ? 'block' : 'none';
+      errEl.textContent = msg || '';
+    }
+
+    // -------- DEM (Terrarium mosaic) --------
+    const DEM_Z = 14;
+    const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
+    const TILE = 256;
+    const MOSAIC = 5;
+    const demCanvas = document.createElement('canvas');
+    demCanvas.width = TILE * MOSAIC;
+    demCanvas.height = TILE * MOSAIC;
+    const dem2d = demCanvas.getContext('2d');
+    let demHeights = null; // Float32Array meters
+    let tileOrigin = { x: 0, y: 0 };
+    let demOriginWorldPx = { x: 0, y: 0 };
+
+    function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
+    function latToTileY(lat, z) {
+      const r = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+    function worldPxFromLngLat(lng, lat, z) {
+      const n = 256 * (1 << z);
+      const x = (lng + 180) / 360 * n;
+      const sin = Math.sin(lat * Math.PI / 180);
+      const y = (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * n;
+      return { x, y };
+    }
+    function decodeTerrarium(r, g, b) {
+      return (r * 256 + g + b / 256) - 32768;
+    }
+
+    async function loadDemAtCenter() {
+      setErr('');
+      const c = map.getCenter();
+      const tx = lonToTileX(c.lng, DEM_Z);
+      const ty = latToTileY(c.lat, DEM_Z);
+      const off = (MOSAIC - 1) >> 1; // 3→1, 5→2: mosaic centered on map center tile
+      tileOrigin = { x: tx - off, y: ty - off };
+      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+
+      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      const jobs = [];
+      for (let j = 0; j < MOSAIC; j++) {
+        for (let i = 0; i < MOSAIC; i++) {
+          const x = tileOrigin.x + i;
+          const y = tileOrigin.y + j;
+          const url = `${DEM_URL}/${DEM_Z}/${x}/${y}.png`;
+          jobs.push(new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve({ img, i, j });
+            img.onerror = () => reject(new Error('DEM tile failed: ' + url));
+            img.src = url;
+          }));
+        }
+      }
+      const tiles = await Promise.all(jobs);
+      for (const t of tiles) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+
+      const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
+      const w = demCanvas.width, h = demCanvas.height;
+      const out = new Float32Array(w * h);
+      const d = img.data;
+      for (let i = 0; i < w * h; i++) out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
+      demHeights = out;
+    }
+
+    function sampleDemHeightUV(u, v) {
+      if (!demHeights) return NaN;
+      const w = demCanvas.width, h = demCanvas.height;
+      const x = Math.max(0, Math.min(w - 1, u * (w - 1)));
+      const y = Math.max(0, Math.min(h - 1, v * (h - 1)));
+      return demHeights[(y | 0) * w + (x | 0)];
+    }
+
+    function demUvFromScreenPx(sx, sy) {
+      const ll = map.unproject([sx, sy]);
+      const wp = worldPxFromLngLat(ll.lng, ll.lat, DEM_Z);
+      const dx = wp.x - demOriginWorldPx.x;
+      const dy = wp.y - demOriginWorldPx.y;
+      const w = demCanvas.width, h = demCanvas.height;
+      const inside = dx >= 0 && dy >= 0 && dx < w && dy < h;
+      return { u: dx / w, v: dy / h, inside };
+    }
+
+    // -------- CA water model --------
+    let N = 256;
+    let W = null;      // Float32Array water
+    let dW = null;     // Float32Array delta water
+    let H = null;      // Float32Array terrain height (meters) sampled from DEM for each cell
+    let valid = null;  // 1 = screen ray hits DEM mosaic (no fake edge heights)
+    let debugSlope = false;
+    let mappingDirty = true;
+
+    const params = {
+      run: true,
+      debugCells: false,
+      flow: 0.50,
+      nbr: 2,
+      rain: 1.76,
+      rainAmp: 8.73,
+      rainPeriod: 2324,
+      rainNoise: 0.65,      // 0..1 strength of spatial rain variation
+      rainNoiseScale: 3.5,  // spatial frequency (higher = smaller blobs)
+      evap: 0.001,
+      steps: 3,
+      op: 0.74,
+      brushOn: false,
+      brushSize: 14,
+      brushAmt: 50
+    };
+    let tick = 0; // CA steps elapsed (used for oscillating rain)
+    const rainFillEl = document.getElementById('rainFill');
+    const rainNowEl = document.getElementById('rainNow');
+
+    function currentRainLevel() {
+      const base = params.rain;
+      const amp = params.rainAmp;
+      const period = Math.max(1, params.rainPeriod | 0);
+      const osc = amp > 0 ? (amp * Math.sin((2 * Math.PI * tick) / period)) : 0;
+      return Math.max(0, base + osc);
+    }
+
+    function updateRainMeter() {
+      if (!rainFillEl || !rainNowEl) return;
+      const level = currentRainLevel();
+      const denom = Math.max(1e-6, params.rain + params.rainAmp); // max possible (before clamp)
+      const pct = Math.max(0, Math.min(1, level / denom));
+      rainFillEl.style.height = `${(pct * 100).toFixed(1)}%`;
+      rainNowEl.textContent = level.toFixed(2);
+    }
+
+    // -------- Spatial rain noise (2D Perlin) --------
+    // Deterministic permutation for stable patterns across reloads.
+    const PERM = (() => {
+      // Simple seeded shuffle (Mulberry32) for reproducible Perlin.
+      let seed = 1337;
+      const rand = () => {
+        seed |= 0;
+        seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const p = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) p[i] = i;
+      for (let i = 255; i > 0; i--) {
+        const j = (rand() * (i + 1)) | 0;
+        const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+      }
+      const perm = new Uint8Array(512);
+      for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+      return perm;
+    })();
+
+    const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const grad2 = (hash, x, y) => {
+      // 8-direction gradients via hash.
+      const h = hash & 7;
+      const u = h < 4 ? x : y;
+      const v = h < 4 ? y : x;
+      return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+    };
+
+    function perlin2(x, y) {
+      const X = Math.floor(x) & 255;
+      const Y = Math.floor(y) & 255;
+      const xf = x - Math.floor(x);
+      const yf = y - Math.floor(y);
+      const u = fade(xf);
+      const v = fade(yf);
+
+      const aa = PERM[X + PERM[Y]];
+      const ab = PERM[X + PERM[Y + 1]];
+      const ba = PERM[X + 1 + PERM[Y]];
+      const bb = PERM[X + 1 + PERM[Y + 1]];
+
+      const x1 = lerp(grad2(aa, xf, yf),     grad2(ba, xf - 1, yf),     u);
+      const x2 = lerp(grad2(ab, xf, yf - 1), grad2(bb, xf - 1, yf - 1), u);
+      return lerp(x1, x2, v); // ~[-1, 1]
+    }
+
+    function rainNoiseAt01(xi, yi) {
+      // xi, yi in [0, N)
+      const s = Math.max(0.01, params.rainNoiseScale);
+      // Slow drift over time so the rain field isn't static.
+      const tt = tick * 0.0025;
+      const nx = (xi / Math.max(1, N)) * s + tt;
+      const ny = (yi / Math.max(1, N)) * s + tt * 0.73;
+      const n = perlin2(nx, ny); // [-1,1]
+      return 0.5 + 0.5 * n;
+    }
+
+    // -------- Brush painting (adds water locally) --------
+    const paintLayerEl = document.getElementById('paintLayer');
+    const brushPopoverEl = document.getElementById('brushPopover');
+    const brushBtnEl = document.getElementById('brushBtnFloating');
+    const brushCloseEl = document.getElementById('brushClose');
+    const brushOnEl = document.getElementById('brushOn');
+    const brushSizeEl = document.getElementById('brushSize');
+    const brushSizeValEl = document.getElementById('brushSize-val');
+    const brushAmtEl = document.getElementById('brushAmt');
+    const brushAmtValEl = document.getElementById('brushAmt-val');
+
+    function setBrushEnabled(on) {
+      params.brushOn = !!on;
+      if (brushOnEl) brushOnEl.checked = params.brushOn;
+      if (paintLayerEl) paintLayerEl.style.pointerEvents = params.brushOn ? 'auto' : 'none';
+      // Disable map interactions while painting is enabled (so drags paint, not pan).
+      if (params.brushOn) {
+        try { map.dragPan.disable(); } catch {}
+        try { map.scrollZoom.disable(); } catch {}
+        try { map.dragRotate.disable(); } catch {}
+        try { map.touchZoomRotate.disable(); } catch {}
+      } else {
+        try { map.dragPan.enable(); } catch {}
+        try { map.scrollZoom.enable(); } catch {}
+        try { map.dragRotate.enable(); } catch {}
+        try { map.touchZoomRotate.enable(); } catch {}
+      }
+    }
+
+    function openBrushPopover(open) {
+      if (!brushPopoverEl) return;
+      brushPopoverEl.style.display = open ? 'block' : 'none';
+      if (open) setBrushEnabled(true);
+    }
+
+    function paintAtCssPx(sx, sy) {
+      if (!W || !valid) return;
+      const rect = canvas.getBoundingClientRect();
+      const cw = rect.width, ch = rect.height;
+      if (cw <= 0 || ch <= 0) return;
+      const fx = (sx / cw) * (N - 1);
+      const fy = (sy / ch) * (N - 1);
+      const cx = Math.round(fx);
+      const cy = Math.round(fy);
+      const R = Math.max(1, Math.min(60, params.brushSize | 0));
+      // Bigger brush scale than global rain so painting is immediately visible.
+      const add = Math.max(0, params.brushAmt) * 0.02;
+      const r2 = R * R;
+      for (let oy = -R; oy <= R; oy++) {
+        const y = cy + oy;
+        if (y < 0 || y >= N) continue;
+        for (let ox = -R; ox <= R; ox++) {
+          const x = cx + ox;
+          if (x < 0 || x >= N) continue;
+          const d2 = ox * ox + oy * oy;
+          if (d2 > r2) continue;
+          const k = y * N + x;
+          if (!valid[k]) continue;
+          const wgt = 1 - (d2 / r2); // simple radial falloff
+          W[k] += add * wgt;
+        }
+      }
+    }
+
+    let painting = false;
+    function onPaintPointerDown(e) {
+      if (!params.brushOn) return;
+      painting = true;
+      try { paintLayerEl.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+      paintAtCssPx(e.clientX, e.clientY);
+    }
+    function onPaintPointerMove(e) {
+      if (!painting || !params.brushOn) return;
+      e.preventDefault();
+      paintAtCssPx(e.clientX, e.clientY);
+    }
+    function onPaintPointerUp(e) {
+      if (!params.brushOn) return;
+      painting = false;
+      try { paintLayerEl.releasePointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+    }
+
+    if (paintLayerEl) {
+      paintLayerEl.addEventListener('pointerdown', onPaintPointerDown, { passive: false });
+      paintLayerEl.addEventListener('pointermove', onPaintPointerMove, { passive: false });
+      paintLayerEl.addEventListener('pointerup', onPaintPointerUp, { passive: false });
+      paintLayerEl.addEventListener('pointercancel', onPaintPointerUp, { passive: false });
+      paintLayerEl.addEventListener('contextmenu', (e) => { if (params.brushOn) e.preventDefault(); });
+    }
+
+    if (brushBtnEl) brushBtnEl.addEventListener('click', () => openBrushPopover(true));
+    if (brushCloseEl) brushCloseEl.addEventListener('click', () => openBrushPopover(false));
+    if (brushOnEl) brushOnEl.addEventListener('change', (e) => setBrushEnabled(e.target.checked));
+    if (brushSizeEl && brushSizeValEl) {
+      const sync = () => { params.brushSize = (parseInt(brushSizeEl.value, 10) | 0); brushSizeValEl.textContent = String(params.brushSize); };
+      brushSizeEl.addEventListener('input', sync);
+      sync();
+    }
+    if (brushAmtEl && brushAmtValEl) {
+      const sync = () => { params.brushAmt = parseFloat(brushAmtEl.value); brushAmtValEl.textContent = params.brushAmt.toFixed(1); };
+      brushAmtEl.addEventListener('input', sync);
+      sync();
+    }
+    // Initialize brush disabled (default)
+    setBrushEnabled(params.brushOn);
+
+    function alloc(n) {
+      N = n;
+      W = new Float32Array(N * N);
+      dW = new Float32Array(N * N);
+      H = new Float32Array(N * N);
+      valid = new Uint8Array(N * N);
+      resetWater();
+      mappingDirty = true;
+    }
+
+    function resetWater() {
+      if (!W) return;
+      // Equalize water across the landscape: set every valid cell to the same W.
+      // (Keeps total water approximately conserved, but removes local variation.)
+      let sum = 0;
+      let cnt = 0;
+      for (let i = 0; i < W.length; i++) {
+        if (!valid[i]) continue;
+        const ww = W[i];
+        if (Number.isFinite(ww)) sum += ww;
+        cnt++;
+      }
+      const mean = cnt > 0 ? (sum / cnt) : 0;
+      for (let i = 0; i < W.length; i++) {
+        W[i] = valid[i] ? mean : 0;
+      }
+      tick = 0;
+    }
+
+    function rebuildMappingAndTerrain() {
+      if (!demHeights) return;
+      // IMPORTANT: map.unproject expects CSS pixel coordinates, not device pixels.
+      const rect = canvas.getBoundingClientRect();
+      const cw = rect.width, ch = rect.height;
+      for (let y = 0; y < N; y++) {
+        const sy = (y / (N - 1)) * ch;
+        for (let x = 0; x < N; x++) {
+          const sx = (x / (N - 1)) * cw;
+          const uv = demUvFromScreenPx(sx, sy);
+          const k = y * N + x;
+          if (!uv.inside) {
+            valid[k] = 0;
+            H[k] = 0;
+            W[k] = 0;
+          } else {
+            valid[k] = 1;
+            H[k] = sampleDemHeightUV(uv.u, uv.v);
+          }
+        }
+      }
+      mappingDirty = false;
+    }
+
+    function caStep() {
+      // 4-neighbor downhill redistribution.
+      // Move a fraction of water downhill based on terrain height H.
+      // (Using H rather than H+W prevents the system from quickly "leveling" the water surface everywhere,
+      // and produces stronger accumulation in low channels over time.)
+      dW.fill(0);
+      const flow = params.flow;
+      const evap = params.evap;
+      // Larger => more pooling/accumulation in flatter low areas.
+      const slopeSoft = 18; // meters
+      // Rain is a continuous baseline plus an oscillation so you can see pulses propagate.
+      const rainBase = currentRainLevel() * 0.0022; // per-step mass input per cell
+
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          const i = y * N + x;
+          if (!valid[i]) continue;
+          // Spatially varying rain using 2D Perlin noise (so rain isn't uniform).
+          const ns = Math.max(0, Math.min(1, params.rainNoise));
+          const n01 = ns > 0 ? rainNoiseAt01(x, y) : 0.5;
+          const rainLocal = rainBase * Math.max(0, 1 + ns * (n01 * 2 - 1));
+          let wHere = W[i] + rainLocal;
+          if (wHere <= 0) { W[i] = 0; continue; }
+
+          const hHere = H[i];
+          const R = Math.max(1, Math.min(4, params.nbr | 0));
+          let sumW = 0;
+          let sumDrop = 0; // for "steep" factor (unweighted)
+
+          // First pass: compute total downhill opportunity within radius.
+          for (let oy = -R; oy <= R; oy++) {
+            const ny = y + oy;
+            if (ny < 0 || ny >= N) continue;
+            for (let ox = -R; ox <= R; ox++) {
+              if (ox === 0 && oy === 0) continue;
+              const nx = x + ox;
+              if (nx < 0 || nx >= N) continue;
+              const j = ny * N + nx;
+              if (!valid[j]) continue;
+              const drop = hHere - H[j];
+              if (drop <= 0) continue;
+              const dist = Math.hypot(ox, oy);
+              const wgt = drop / dist;
+              sumW += wgt;
+              sumDrop += drop;
+            }
+          }
+
+          if (sumW > 0) {
+            // Total outflow depends on how steeply downhill we can go.
+            const steep = sumDrop / (sumDrop + slopeSoft);
+            const out = Math.min(wHere, Math.max(0, Math.min(1, flow)) * steep * wHere);
+            const inv = out / sumW;
+
+            // Second pass: distribute to lower neighbors by weighted drop.
+            for (let oy = -R; oy <= R; oy++) {
+              const ny = y + oy;
+              if (ny < 0 || ny >= N) continue;
+              for (let ox = -R; ox <= R; ox++) {
+                if (ox === 0 && oy === 0) continue;
+                const nx = x + ox;
+                if (nx < 0 || nx >= N) continue;
+                const j = ny * N + nx;
+                if (!valid[j]) continue;
+                const drop = hHere - H[j];
+                if (drop <= 0) continue;
+                const dist = Math.hypot(ox, oy);
+                const wgt = drop / dist;
+                dW[j] += wgt * inv;
+              }
+            }
+            dW[i] -= out;
+          }
+
+          // write back local rain immediately; other deltas handled after loop
+          W[i] = wHere;
+        }
+      }
+      tick++;
+
+      // Apply deltas + evaporation
+      const keep = Math.max(0, Math.min(1, 1 - evap));
+      for (let i = 0; i < W.length; i++) {
+        if (!valid[i]) { W[i] = 0; continue; }
+        let nw = (W[i] + dW[i]) * keep;
+        if (!Number.isFinite(nw) || nw < 0) nw = 0;
+        W[i] = nw;
+      }
+    }
+
+    // -------- Render --------
+    const tmp = document.createElement('canvas');
+    let tctx = tmp.getContext('2d');
+
+    function render() {
+      const w = canvas.width, h = canvas.height;
+      if (tmp.width !== N || tmp.height !== N) {
+        tmp.width = N; tmp.height = N;
+        tctx = tmp.getContext('2d');
+      }
+
+      const img = tctx.createImageData(N, N);
+      const data = img.data;
+
+      for (let i = 0; i < W.length; i++) {
+        const aIdx = i * 4;
+        if (!valid[i]) { data[aIdx+3] = 0; continue; }
+        const ww = W[i];
+        // Heatmap ramp (blue→cyan→yellow→red), with a soft-saturating scale so it doesn't blow out to white.
+        // t = 1 - exp(-k*W) gives good dynamic range across small/large values.
+        // Smaller k => takes higher W to reach "red".
+        const t = 1 - Math.exp(-Math.max(0, ww) * 0.18);
+        const alpha = Math.min(1, Math.max(0, ww) * 2.8) * params.op;
+        let r = 0, g = 0, b = 0;
+        if (t < 0.25) {
+          // deep blue -> cyan
+          const k = t / 0.25;
+          r = 0;
+          g = 255 * k;
+          b = 160 + 95 * k;
+        } else if (t < 0.5) {
+          // cyan -> green/yellow
+          const k = (t - 0.25) / 0.25;
+          r = 255 * k;
+          g = 255;
+          b = 255 * (1 - k);
+        } else if (t < 0.75) {
+          // yellow -> red
+          const k = (t - 0.5) / 0.25;
+          r = 255;
+          g = 255 * (1 - k);
+          b = 0;
+        } else {
+          // keep near red (avoid "white blowout")
+          const k = (t - 0.75) / 0.25;
+          r = 255;
+          g = 40 * k;
+          b = 0;
+        }
+        data[aIdx]   = r | 0;
+        data[aIdx+1] = g | 0;
+        data[aIdx+2] = b | 0;
+        data[aIdx+3] = (alpha * 255) | 0;
+      }
+
+      tctx.putImageData(img, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      if (!params.debugCells) {
+        // When zoomed in, scaling a discrete grid with smoothing can create moiré/scanline bands.
+        // Use nearest-neighbor when cells are "large" on screen; otherwise use high-quality smoothing.
+        const cellW = w / N;
+        const cellH = h / N;
+        const zoomedIn = Math.max(cellW, cellH) >= 1.5;
+        ctx.imageSmoothingEnabled = !zoomedIn;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(tmp, 0, 0, w, h);
+      } else {
+        // Debug: per-cell pixels + per-cell text of W.
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalAlpha = 1;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(tmp, 0, 0, w, h);
+
+        const cellW = w / N;
+        const cellH = h / N;
+        const cellMin = Math.min(cellW, cellH);
+        const fontPx = Math.max(6, Math.min(14, Math.floor(cellMin * 0.42)));
+        ctx.font = `${fontPx}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // White text with dark stroke for readability.
+        ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.26));
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+
+        for (let y = 0; y < N; y++) {
+          const py = (y + 0.5) * cellH;
+          for (let x = 0; x < N; x++) {
+            const i = y * N + x;
+            if (!valid[i]) continue;
+            const ww = W[i];
+            const txt = ww.toFixed(2);
+            const px = (x + 0.5) * cellW;
+            ctx.strokeText(txt, px, py);
+            ctx.fillText(txt, px, py);
+          }
+        }
+        ctx.restore();
+      }
+
+      if (debugSlope && demHeights) {
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 1;
+        const step = 20;
+        const rect = canvas.getBoundingClientRect();
+        const cw = rect.width, ch = rect.height;
+        for (let sy = 0; sy <= ch; sy += step) {
+          for (let sx = 0; sx <= cw; sx += step) {
+            const uv = demUvFromScreenPx(sx, sy);
+            if (!uv.inside) continue;
+            const eps = 1 / demCanvas.width;
+            const hx1 = sampleDemHeightUV(uv.u + eps, uv.v);
+            const hx0 = sampleDemHeightUV(uv.u - eps, uv.v);
+            const hy1 = sampleDemHeightUV(uv.u, uv.v + eps);
+            const hy0 = sampleDemHeightUV(uv.u, uv.v - eps);
+            const gx = (hx1 - hx0) * 0.5;
+            const gy = (hy1 - hy0) * 0.5;
+            const gm = Math.hypot(gx, gy) || 0;
+            if (gm < 1e-4) continue;
+            const dx = -gx / gm, dy = -gy / gm;
+            const len = 10;
+            // Convert CSS pixels to device pixels for drawing on the canvas
+            const px = (sx / cw) * w;
+            const py = (sy / ch) * h;
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(px + dx * len, py + dy * len);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+    }
+
+    // -------- UI --------
+    const hudEl = document.getElementById('hud');
+    const hudToggleEl = document.getElementById('hudToggle');
+    const applyHudCollapsed = (collapsed) => {
+      if (!hudEl) return;
+      hudEl.classList.toggle('collapsed', !!collapsed);
+      try { localStorage.setItem('caHudCollapsed', collapsed ? '1' : '0'); } catch {}
+    };
+    try { applyHudCollapsed(localStorage.getItem('caHudCollapsed') === '1'); } catch {}
+    if (hudToggleEl) {
+      hudToggleEl.addEventListener('click', () => applyHudCollapsed(!hudEl.classList.contains('collapsed')));
+    }
+
+    document.getElementById('run').addEventListener('change', e => params.run = e.target.checked);
+    document.getElementById('debugCells').addEventListener('change', e => params.debugCells = e.target.checked);
+    const bindR = (id, outId, fmt, set) => {
+      const el = document.getElementById(id);
+      const out = document.getElementById(outId);
+      const sync = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); };
+      el.addEventListener('input', sync);
+      sync();
+    };
+    bindR('grid', 'grid-val', v => String(v|0), v => alloc(v|0));
+    bindR('flow', 'flow-val', v => v.toFixed(2), v => params.flow = v);
+    bindR('nbr', 'nbr-val', v => String(v|0), v => params.nbr = v|0);
+    bindR('rain', 'rain-val', v => v.toFixed(2), v => params.rain = v);
+    bindR('rainAmp', 'rainAmp-val', v => v.toFixed(2), v => params.rainAmp = v);
+    bindR('rainPeriod', 'rainPeriod-val', v => String(v|0), v => params.rainPeriod = v|0);
+    bindR('evap', 'evap-val', v => v.toFixed(3), v => params.evap = v);
+    bindR('steps', 'steps-val', v => String(v|0), v => params.steps = v|0);
+    bindR('op', 'op-val', v => v.toFixed(2), v => params.op = v);
+    document.getElementById('reset').addEventListener('click', () => resetWater());
+    document.getElementById('reloadDem').addEventListener('click', async () => {
+      try {
+        await loadDemAtCenter();
+        mappingDirty = true;
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'd') debugSlope = !debugSlope;
+    });
+
+    // -------- Loop --------
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(r.width * dpr));
+      const h = Math.max(1, Math.floor(r.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        mappingDirty = true;
+      }
+    }
+
+    function frame() {
+      resize();
+      if (demHeights && W) {
+        if (mappingDirty) rebuildMappingAndTerrain();
+        if (params.run) {
+          for (let i = 0; i < params.steps; i++) caStep();
+        }
+        updateRainMeter();
+        render();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    map.on('load', async () => {
+      try {
+        alloc(N);
+        await loadDemAtCenter();
+        mappingDirty = true;
+        map.on('move', () => { mappingDirty = true; });
+        frame();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+  </script>
+</body>
+</html>
+
