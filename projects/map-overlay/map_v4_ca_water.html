@@ -337,14 +337,20 @@
     const DEM_Z = 14;
     const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
     const TILE = 256;
-    const MOSAIC = 5;
+    let MOSAIC_W = 5;
+    let MOSAIC_H = 5;
     const demCanvas = document.createElement('canvas');
-    demCanvas.width = TILE * MOSAIC;
-    demCanvas.height = TILE * MOSAIC;
+    demCanvas.width = TILE * MOSAIC_W;
+    demCanvas.height = TILE * MOSAIC_H;
     const dem2d = demCanvas.getContext('2d');
     let demHeights = null; // Float32Array meters
     let tileOrigin = { x: 0, y: 0 };
     let demOriginWorldPx = { x: 0, y: 0 };
+
+    // Tile cache: key "tx,ty" → ImageBitmap or Image (already decoded).
+    const tileCache = new Map();
+    const PURGE_MARGIN = 3; // keep tiles this far outside the current range before purging
+    let demLoadGen = 0; // generation counter so stale loads don't overwrite newer ones
 
     function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
     function latToTileY(lat, z) {
@@ -362,33 +368,72 @@
       return (r * 256 + g + b / 256) - 32768;
     }
 
+    function fetchTile(tx, ty) {
+      const key = `${tx},${ty}`;
+      if (tileCache.has(key)) return tileCache.get(key);
+      const p = new Promise((resolve) => {
+        const url = `${DEM_URL}/${DEM_Z}/${tx}/${ty}.png`;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => { resolve(img); };
+        img.onerror = () => { resolve(null); };
+        img.src = url;
+      });
+      tileCache.set(key, p);
+      return p;
+    }
+
+    function purgeTileCache(txMin, txMax, tyMin, tyMax) {
+      const M = PURGE_MARGIN;
+      for (const key of [...tileCache.keys()]) {
+        const [sx, sy] = key.split(',').map(Number);
+        if (sx < txMin - M || sx > txMax + M || sy < tyMin - M || sy > tyMax + M) {
+          tileCache.delete(key);
+        }
+      }
+    }
+
     async function loadDemAtCenter() {
       setErr('');
-      const c = map.getCenter();
-      const tx = lonToTileX(c.lng, DEM_Z);
-      const ty = latToTileY(c.lat, DEM_Z);
-      const off = (MOSAIC - 1) >> 1; // 3→1, 5→2: mosaic centered on map center tile
-      tileOrigin = { x: tx - off, y: ty - off };
-      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+      const gen = ++demLoadGen;
 
-      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      const bounds = map.getBounds();
+      const nw = bounds.getNorthWest();
+      const se = bounds.getSouthEast();
+      const txMin = lonToTileX(nw.lng, DEM_Z);
+      const txMax = lonToTileX(se.lng, DEM_Z);
+      const tyMin = latToTileY(nw.lat, DEM_Z);
+      const tyMax = latToTileY(se.lat, DEM_Z);
+
+      // 1-tile padding.
+      const ox = txMin - 1, oy = tyMin - 1;
+      const mw = (txMax - txMin) + 3;
+      const mh = (tyMax - tyMin) + 3;
+
+      // Fetch all needed tiles (cached ones resolve instantly).
       const jobs = [];
-      for (let j = 0; j < MOSAIC; j++) {
-        for (let i = 0; i < MOSAIC; i++) {
-          const x = tileOrigin.x + i;
-          const y = tileOrigin.y + j;
-          const url = `${DEM_URL}/${DEM_Z}/${x}/${y}.png`;
-          jobs.push(new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.onload = () => resolve({ img, i, j });
-            img.onerror = () => reject(new Error('DEM tile failed: ' + url));
-            img.src = url;
-          }));
+      for (let j = 0; j < mh; j++) {
+        for (let i = 0; i < mw; i++) {
+          const tx = ox + i, ty = oy + j;
+          jobs.push(fetchTile(tx, ty).then(img => img ? { img, i, j } : null));
         }
       }
       const tiles = await Promise.all(jobs);
-      for (const t of tiles) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+
+      // Abort if a newer load was triggered while we waited.
+      if (gen !== demLoadGen) return;
+
+      tileOrigin = { x: ox, y: oy };
+      MOSAIC_W = mw;
+      MOSAIC_H = mh;
+      demCanvas.width = TILE * MOSAIC_W;
+      demCanvas.height = TILE * MOSAIC_H;
+      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+
+      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      for (const t of tiles) {
+        if (t) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+      }
 
       const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
       const w = demCanvas.width, h = demCanvas.height;
@@ -396,6 +441,9 @@
       const d = img.data;
       for (let i = 0; i < w * h; i++) out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
       demHeights = out;
+
+      // Purge tiles far outside the current view.
+      purgeTileCache(txMin, txMax, tyMin, tyMax);
     }
 
     function sampleDemHeightUV(u, v) {
@@ -991,6 +1039,14 @@
         await loadDemAtCenter();
         mappingDirty = true;
         map.on('move', () => { mappingDirty = true; });
+        map.on('moveend', async () => {
+          try {
+            await loadDemAtCenter();
+            mappingDirty = true;
+          } catch (e) {
+            setErr(String(e && e.message ? e.message : e));
+          }
+        });
         frame();
       } catch (e) {
         setErr(String(e && e.message ? e.message : e));

@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Water Flow (GPU CA + DEM)</title>
+  <link rel="stylesheet" href="./assets/maplibre-gl.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #map { position: absolute; inset: 0; }
+    #overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 2;
+      mix-blend-mode: screen;
+    }
+    #paintLayer {
+      position: absolute; inset: 0;
+      z-index: 6;
+      pointer-events: none;
+      cursor: crosshair;
+    }
+    #hud {
+      position: absolute; left: 12px; top: 12px; z-index: 10;
+      background: rgba(20,20,20,0.86);
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 12px;
+      padding: 10px 10px;
+      width: 280px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      color: #e8eaed;
+      backdrop-filter: blur(6px);
+    }
+    #hud::-webkit-scrollbar { width: 10px; }
+    #hud::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 999px; }
+    #hud::-webkit-scrollbar-track { background: transparent; }
+    #hud .title { display:flex; align-items:baseline; gap: 10px; }
+    #hud .title .name { font-weight: 700; font-size: 13px; }
+    #hud .title .sub { font-size: 11px; color:#9aa0a6; }
+    #hud .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #hud label { width: 104px; font-size: 11px; color:#9aa0a6; }
+    #hud input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #hud .val { width: 70px; text-align:right; font-size: 11px; color:#e8eaed; }
+    #hud .tog { display:flex; align-items:center; gap: 8px; padding-top: 8px; }
+    #hud .tog input { accent-color: #8ab4f8; }
+    #hud .btns { display:flex; gap: 8px; margin-top: 8px; }
+    #hud button {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(48,49,52,0.9);
+      color: #e8eaed;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #hud button:hover { background: rgba(60,64,67,0.95); }
+    #hud .hint { margin-top: 8px; font-size: 11px; color:#9aa0a6; line-height: 1.35; }
+    #hud .err { margin-top: 8px; font-size: 11px; color:#ffb4ab; display:none; white-space: pre-wrap; }
+    #hud .hdr {
+      display:flex; align-items:center; justify-content:space-between; gap: 10px;
+    }
+    #hud .collapseBtn {
+      width: 30px; height: 30px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.85); color: #e8eaed;
+      cursor: pointer; font-size: 14px; line-height: 1;
+      display:flex; align-items:center; justify-content:center; flex: 0 0 auto;
+    }
+    #hud .collapseBtn:hover { background: rgba(60,64,67,0.95); }
+    #hud.collapsed { width: 44px; padding: 10px 6px; overflow: hidden; }
+    #hud.collapsed .content { display:none; }
+    #hud.collapsed .collapseBtn { width: 32px; height: 32px; border-radius: 12px; }
+    #hud.collapsed .title { display:none; }
+    #rainMeter {
+      position: absolute; right: 12px; bottom: 12px; z-index: 11;
+      width: 36px; height: 200px; border-radius: 12px;
+      background: rgba(20,20,20,0.70); border: 1px solid rgba(255,255,255,0.14);
+      backdrop-filter: blur(6px); overflow: hidden; pointer-events: auto;
+    }
+    #rainMeter .fill {
+      position: absolute; left: 0; bottom: 0; width: 100%; height: 0%;
+      background: linear-gradient(180deg, rgba(255,80,80,0.95), rgba(255,210,80,0.95), rgba(60,200,255,0.95));
+    }
+    #rainMeter .label {
+      position: absolute; left: 50%; top: 6px; transform: translateX(-50%);
+      font-size: 10px; color: rgba(232,234,237,0.92);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.55);
+      font-variant-numeric: tabular-nums;
+      background: rgba(0,0,0,0.20); padding: 2px 6px;
+      border-radius: 999px; border: 1px solid rgba(255,255,255,0.10);
+    }
+    #curveBtnFloating {
+      position: absolute; right: 12px; bottom: 260px; z-index: 12;
+      width: 36px; height: 36px; border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.70); color: rgba(232,234,237,0.95);
+      cursor: pointer; font-size: 15px; line-height: 1;
+      display:flex; align-items:center; justify-content:center; user-select: none;
+    }
+    #curveBtnFloating:hover { background: rgba(60,64,67,0.82); }
+    #curvePanel {
+      position: absolute; right: 56px; bottom: 12px; z-index: 12;
+      width: 200px; background: rgba(20,20,20,0.92);
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 12px;
+      padding: 10px; color: #e8eaed; backdrop-filter: blur(6px); display: none;
+    }
+    #curvePanel .hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom: 6px; }
+    #curvePanel .hdr .name { font-weight: 700; font-size: 12px; }
+    #curvePanel .closeBtn {
+      width: 24px; height: 24px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.85); color: #e8eaed;
+      cursor: pointer; font-size: 13px; line-height: 1;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #curvePanel .closeBtn:hover { background: rgba(60,64,67,0.95); }
+    #curveCanvas {
+      width: 180px; height: 140px; border-radius: 6px;
+      background: rgba(0,0,0,0.4); cursor: crosshair;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    #curvePanel .hint {
+      font-size: 10px; color: #9aa0a6; margin-top: 5px; line-height: 1.35;
+    }
+    #curvePanel .btns { display:flex; gap: 6px; margin-top: 6px; }
+    #curvePanel .btns button {
+      flex: 1; padding: 4px 0; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(48,49,52,0.8); color: #e8eaed;
+      cursor: pointer; font-size: 10px;
+    }
+    #curvePanel .btns button:hover { background: rgba(60,64,67,0.95); }
+    #brushBtnFloating {
+      position: absolute; right: 12px; bottom: 304px; z-index: 12;
+      width: 36px; height: 36px; border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.70); color: rgba(232,234,237,0.95);
+      cursor: pointer; font-size: 12px; line-height: 1;
+      display:flex; align-items:center; justify-content:center; user-select: none;
+    }
+    #brushBtnFloating:hover { background: rgba(60,64,67,0.82); }
+    #brushPopover {
+      position: absolute; right: 60px; bottom: 12px; z-index: 12;
+      width: 260px; background: rgba(20,20,20,0.88);
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 12px;
+      padding: 10px 10px; color: #e8eaed; backdrop-filter: blur(6px); display: none;
+    }
+    #brushPopover .hdr { display:flex; align-items:center; justify-content:space-between; gap: 10px; margin-bottom: 6px; }
+    #brushPopover .hdr .name { font-weight: 700; font-size: 12px; }
+    #brushPopover .closeBtn {
+      width: 28px; height: 28px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(48,49,52,0.85); color: #e8eaed;
+      cursor: pointer; font-size: 14px; line-height: 1;
+      display:flex; align-items:center; justify-content:center; flex: 0 0 auto;
+    }
+    #brushPopover .closeBtn:hover { background: rgba(60,64,67,0.95); }
+    #brushPopover .row { display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+    #brushPopover label { width: 104px; font-size: 11px; color:#9aa0a6; }
+    #brushPopover input[type="range"] { flex: 1; accent-color: #8ab4f8; }
+    #brushPopover .val { width: 70px; text-align:right; font-size: 11px; color:#e8eaed; }
+    #hud .layers { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); }
+    #hud .layers .lbl { font-size: 11px; color:#9aa0a6; margin-bottom: 4px; font-weight: 600; }
+    #hud .layers .lrow {
+      display:flex; align-items:center; gap: 8px; padding: 4px 0;
+    }
+    #hud .layers .lrow label { width: auto; font-size: 11px; color:#e8eaed; }
+    #hud .layers .lrow input { accent-color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="overlay"></canvas>
+  <div id="paintLayer" aria-hidden="true"></div>
+  <button id="curveBtnFloating" title="Rain curve editor" aria-label="Rain curve editor">&#x2f0f;</button>
+  <button id="brushBtnFloating" title="Brush rain" aria-label="Brush rain">Brush</button>
+  <div id="curvePanel" role="dialog" aria-label="Rain curve editor">
+    <div class="hdr">
+      <div class="name">Rain curve</div>
+      <button class="closeBtn" id="curveClose" title="Close" aria-label="Close">&times;</button>
+    </div>
+    <canvas id="curveCanvas" width="360" height="280"></canvas>
+    <div class="btns">
+      <button id="curvePresetBurst">Burst</button>
+      <button id="curvePresetSine">Sine</button>
+      <button id="curvePresetFlat">Flat</button>
+      <button id="curvePresetReset">Reset</button>
+    </div>
+    <div class="hint">Click to add points &middot; drag to move &middot; right-click to remove</div>
+  </div>
+  <div id="rainMeter" aria-hidden="true">
+    <div class="fill" id="rainFill"></div>
+    <div class="label" id="rainNow">0.00</div>
+  </div>
+  <div id="brushPopover" role="dialog" aria-label="Brush options">
+    <div class="hdr">
+      <div class="name">Brush rain</div>
+      <button class="closeBtn" id="brushClose" title="Close" aria-label="Close">&times;</button>
+    </div>
+    <div class="row">
+      <label>Brush size</label>
+      <input type="range" id="brushSize" min="1" max="60" step="1" value="14">
+      <div class="val" id="brushSize-val">14</div>
+    </div>
+    <div class="row">
+      <label>Amount</label>
+      <input type="range" id="brushAmt" min="0" max="200" step="0.1" value="50">
+      <div class="val" id="brushAmt-val">50.0</div>
+    </div>
+    <div class="row">
+      <label style="width:auto;color:#e8eaed;">Enable brush</label>
+      <input type="checkbox" id="brushOn">
+      <div style="margin-left:auto;font-size:11px;color:#9aa0a6;">paint adds water</div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div class="hdr">
+      <div class="title">
+        <div class="name">CA water runoff <span style="font-weight:400;font-size:11px;color:#9aa0a6;">GPU</span></div>
+        <div class="sub">height + water &bull; WebGL2</div>
+      </div>
+      <button class="collapseBtn" id="hudToggle" title="Collapse/expand controls" aria-label="Collapse/expand controls">&equiv;</button>
+    </div>
+
+    <div class="content">
+      <div class="tog">
+        <input type="checkbox" id="run" checked>
+        <label for="run" style="width:auto;color:#e8eaed;font-size:12px;">Run</label>
+      </div>
+
+      <div class="row">
+        <label>Grid</label>
+        <input type="range" id="grid" min="64" max="2048" step="64" value="512">
+        <div class="val" id="grid-val">512</div>
+      </div>
+      <div class="row">
+        <label>Flow</label>
+        <input type="range" id="flow" min="0" max="1" step="0.01" value="0.81">
+        <div class="val" id="flow-val">0.81</div>
+      </div>
+      <div class="row">
+        <label>Rain</label>
+        <input type="range" id="rain" min="0" max="2" step="0.01" value="1.76">
+        <div class="val" id="rain-val">1.76</div>
+      </div>
+      <div class="row">
+        <label>Rain amp</label>
+        <input type="range" id="rainAmp" min="0" max="10" step="0.01" value="8.73">
+        <div class="val" id="rainAmp-val">8.73</div>
+      </div>
+      <div class="row">
+        <label>Rain period</label>
+        <input type="range" id="rainPeriod" min="10" max="6000" step="1" value="2324">
+        <div class="val" id="rainPeriod-val">2324</div>
+      </div>
+      <div class="row">
+        <label>Evap</label>
+        <input type="range" id="evap" min="0" max="0.05" step="0.001" value="0.008">
+        <div class="val" id="evap-val">0.000</div>
+      </div>
+      <div class="row">
+        <label>Steps/frame</label>
+        <input type="range" id="steps" min="1" max="60" step="1" value="1">
+        <div class="val" id="steps-val">1</div>
+      </div>
+      <div class="row">
+        <label>Opacity</label>
+        <input type="range" id="op" min="0" max="1" step="0.02" value="0.74">
+        <div class="val" id="op-val">0.74</div>
+      </div>
+
+      <div class="layers">
+        <div class="lbl">Layers</div>
+        <div class="lrow">
+          <input type="checkbox" id="layerSat">
+          <label for="layerSat">Satellite</label>
+        </div>
+        <div class="lrow">
+          <input type="checkbox" id="layerDem" checked>
+          <label for="layerDem">DEM (Terrarium)</label>
+        </div>
+        <div class="lrow">
+          <input type="checkbox" id="layerWater" checked>
+          <label for="layerWater">Water sim</label>
+        </div>
+      </div>
+
+      <div class="btns">
+        <button id="reset">Reset water</button>
+        <button id="reloadDem">Reload DEM</button>
+      </div>
+      <div class="hint">
+        GPU-accelerated CA water runoff. Same model as v4 but the CA step + heatmap run entirely on the GPU via WebGL2 fragment shaders.
+        <span style="display:inline-block;margin-left:6px;">
+          <a href="./map_v4_ca_water_readme.html" target="_blank" rel="noopener" style="color:#8ab4f8;text-decoration:none;">README</a>
+        </span>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+  </div>
+
+  <script src="./assets/maplibre-gl.js"></script>
+  <script type="module">
+    // -------- Map --------
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          base: {
+            type: 'raster',
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
+          },
+        },
+        layers: [
+          { id: 'base', type: 'raster', source: 'base', layout: { visibility: 'none' } }
+        ]
+      },
+      center: [-122.1997, 48.8139],
+      zoom: 14
+    });
+
+    const overlayCanvas = document.getElementById('overlay');
+    let showDemLayer = true;
+    let showWaterLayer = true;
+    let demHMin = 0, demHMax = 1;
+    const errEl = document.getElementById('err');
+    function setErr(msg) {
+      errEl.style.display = msg ? 'block' : 'none';
+      errEl.textContent = msg || '';
+    }
+
+    // -------- DEM (same tile cache as v4) --------
+    const DEM_Z = 14;
+    const DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
+    const TILE = 256;
+    let MOSAIC_W = 5, MOSAIC_H = 5;
+    const demCanvas = document.createElement('canvas');
+    demCanvas.width = TILE * MOSAIC_W;
+    demCanvas.height = TILE * MOSAIC_H;
+    const dem2d = demCanvas.getContext('2d', { willReadFrequently: true });
+    let demHeights = null;
+    let tileOrigin = { x: 0, y: 0 };
+    let demOriginWorldPx = { x: 0, y: 0 };
+    const tileCache = new Map();
+    const PURGE_MARGIN = 3;
+    let demLoadGen = 0;
+
+    function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
+    function latToTileY(lat, z) {
+      const r = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+    function worldPxFromLngLat(lng, lat, z) {
+      const n = 256 * (1 << z);
+      const x = (lng + 180) / 360 * n;
+      const s = Math.sin(lat * Math.PI / 180);
+      const y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+      return { x, y };
+    }
+    function decodeTerrarium(r, g, b) { return (r * 256 + g + b / 256) - 32768; }
+
+    function fetchTile(tx, ty) {
+      const key = `${tx},${ty}`;
+      if (tileCache.has(key)) return tileCache.get(key);
+      const p = new Promise((resolve) => {
+        const url = `${DEM_URL}/${DEM_Z}/${tx}/${ty}.png`;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+      tileCache.set(key, p);
+      return p;
+    }
+    function purgeTileCache(txMin, txMax, tyMin, tyMax) {
+      const M = PURGE_MARGIN;
+      for (const key of [...tileCache.keys()]) {
+        const [sx, sy] = key.split(',').map(Number);
+        if (sx < txMin - M || sx > txMax + M || sy < tyMin - M || sy > tyMax + M) tileCache.delete(key);
+      }
+    }
+    async function loadDemAtCenter() {
+      setErr('');
+      const gen = ++demLoadGen;
+      const bounds = map.getBounds();
+      const nw = bounds.getNorthWest(), se = bounds.getSouthEast();
+      const txMin = lonToTileX(nw.lng, DEM_Z), txMax = lonToTileX(se.lng, DEM_Z);
+      const tyMin = latToTileY(nw.lat, DEM_Z), tyMax = latToTileY(se.lat, DEM_Z);
+      const ox = txMin - 1, oy = tyMin - 1;
+      const mw = (txMax - txMin) + 3, mh = (tyMax - tyMin) + 3;
+      const jobs = [];
+      for (let j = 0; j < mh; j++)
+        for (let i = 0; i < mw; i++) {
+          const tx = ox + i, ty = oy + j;
+          jobs.push(fetchTile(tx, ty).then(img => img ? { img, i, j } : null));
+        }
+      const tiles = await Promise.all(jobs);
+      if (gen !== demLoadGen) return;
+      tileOrigin = { x: ox, y: oy };
+      MOSAIC_W = mw; MOSAIC_H = mh;
+      demCanvas.width = TILE * MOSAIC_W;
+      demCanvas.height = TILE * MOSAIC_H;
+      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+      for (const t of tiles) if (t) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+      const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
+      const w = demCanvas.width, h = demCanvas.height;
+      const out = new Float32Array(w * h);
+      const d = img.data;
+      for (let i = 0; i < w * h; i++) out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
+      demHeights = out;
+      purgeTileCache(txMin, txMax, tyMin, tyMax);
+    }
+    function sampleDemHeightUV(u, v) {
+      if (!demHeights) return NaN;
+      const w = demCanvas.width, h = demCanvas.height;
+      const x = Math.max(0, Math.min(w - 1, u * (w - 1)));
+      const y = Math.max(0, Math.min(h - 1, v * (h - 1)));
+      return demHeights[(y | 0) * w + (x | 0)];
+    }
+    function demUvFromScreenPx(sx, sy) {
+      const ll = map.unproject([sx, sy]);
+      const wp = worldPxFromLngLat(ll.lng, ll.lat, DEM_Z);
+      const dx = wp.x - demOriginWorldPx.x, dy = wp.y - demOriginWorldPx.y;
+      const w = demCanvas.width, h = demCanvas.height;
+      return { u: dx / w, v: dy / h, inside: dx >= 0 && dy >= 0 && dx < w && dy < h };
+    }
+
+    // -------- Params --------
+    let N = 512;
+    let mappingDirty = true;
+    const params = {
+      run: true,
+      flow: 0.81,
+      rain: 1.76,
+      rainAmp: 8.73,
+      rainPeriod: 2324,
+      evap: 0.008,
+      steps: 1,
+      op: 0.74,
+      brushOn: false,
+      brushSize: 14,
+      brushAmt: 50
+    };
+    let tick = 0;
+
+    // -------- Rain Curve Editor --------
+    const curveCanvas = document.getElementById('curveCanvas');
+    const curveCtx = curveCanvas.getContext('2d');
+    const curvePanelEl = document.getElementById('curvePanel');
+    const curveBtnEl = document.getElementById('curveBtnFloating');
+    const curveCloseEl = document.getElementById('curveClose');
+
+    // Control points: {x:0-1 (time in period), y:0-1 (rain multiplier)}
+    // Always sorted by x. Endpoints at x=0 and x=1 can be moved vertically but not removed.
+    let curvePoints = [
+      { x: 0, y: 1 },
+      { x: 0.08, y: 0.6 },
+      { x: 0.25, y: 0.15 },
+      { x: 1, y: 0 }
+    ];
+
+    function sampleCurve(t) {
+      t = Math.max(0, Math.min(1, t));
+      const pts = curvePoints;
+      if (pts.length === 0) return 0;
+      if (pts.length === 1) return pts[0].y;
+      if (t <= pts[0].x) return pts[0].y;
+      if (t >= pts[pts.length - 1].x) return pts[pts.length - 1].y;
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (t >= pts[i].x && t <= pts[i + 1].x) {
+          const seg = pts[i + 1].x - pts[i].x;
+          if (seg < 1e-9) return pts[i].y;
+          const lt = (t - pts[i].x) / seg;
+          // Hermite spline using neighboring tangents
+          const p0 = pts[i].y, p1 = pts[i + 1].y;
+          const m0 = i > 0 ? 0.5 * (p1 - pts[i - 1].y) / ((pts[i + 1].x - pts[i - 1].x) / seg) : (p1 - p0);
+          const m1 = i + 2 < pts.length ? 0.5 * (pts[i + 2].y - p0) / ((pts[i + 2].x - pts[i].x) / seg) : (p1 - p0);
+          const t2 = lt * lt, t3 = t2 * lt;
+          return (2*t3 - 3*t2 + 1)*p0 + (t3 - 2*t2 + lt)*m0 + (-2*t3 + 3*t2)*p1 + (t3 - t2)*m1;
+        }
+      }
+      return pts[pts.length - 1].y;
+    }
+
+    function drawCurve() {
+      const W = curveCanvas.width, H = curveCanvas.height;
+      const pad = 8;
+      const pw = W - pad * 2, ph = H - pad * 2;
+      curveCtx.clearRect(0, 0, W, H);
+
+      // Grid
+      curveCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+      curveCtx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const gx = pad + (i / 4) * pw;
+        const gy = pad + (i / 4) * ph;
+        curveCtx.beginPath(); curveCtx.moveTo(gx, pad); curveCtx.lineTo(gx, pad + ph); curveCtx.stroke();
+        curveCtx.beginPath(); curveCtx.moveTo(pad, gy); curveCtx.lineTo(pad + pw, gy); curveCtx.stroke();
+      }
+
+      // Curve line
+      curveCtx.beginPath();
+      curveCtx.strokeStyle = 'rgba(100,180,255,0.9)';
+      curveCtx.lineWidth = 2;
+      for (let px = 0; px <= pw; px++) {
+        const t = px / pw;
+        const v = Math.max(0, Math.min(1, sampleCurve(t)));
+        const cx = pad + px, cy = pad + (1 - v) * ph;
+        if (px === 0) curveCtx.moveTo(cx, cy); else curveCtx.lineTo(cx, cy);
+      }
+      curveCtx.stroke();
+
+      // Playhead
+      const period = Math.max(1, params.rainPeriod | 0);
+      const phase = (tick % period) / period;
+      const phx = pad + phase * pw;
+      curveCtx.strokeStyle = 'rgba(255,200,60,0.7)';
+      curveCtx.lineWidth = 1.5;
+      curveCtx.setLineDash([4, 3]);
+      curveCtx.beginPath(); curveCtx.moveTo(phx, pad); curveCtx.lineTo(phx, pad + ph); curveCtx.stroke();
+      curveCtx.setLineDash([]);
+      // Playhead dot on curve
+      const phv = Math.max(0, Math.min(1, sampleCurve(phase)));
+      curveCtx.fillStyle = 'rgba(255,200,60,0.95)';
+      curveCtx.beginPath(); curveCtx.arc(phx, pad + (1 - phv) * ph, 4, 0, Math.PI * 2); curveCtx.fill();
+
+      // Control points
+      for (let i = 0; i < curvePoints.length; i++) {
+        const p = curvePoints[i];
+        const cx = pad + p.x * pw, cy = pad + (1 - p.y) * ph;
+        curveCtx.fillStyle = 'rgba(232,234,237,0.95)';
+        curveCtx.strokeStyle = 'rgba(100,180,255,0.8)';
+        curveCtx.lineWidth = 1.5;
+        curveCtx.beginPath(); curveCtx.arc(cx, cy, 5, 0, Math.PI * 2); curveCtx.fill(); curveCtx.stroke();
+      }
+
+      // Axis labels
+      curveCtx.fillStyle = 'rgba(154,160,166,0.7)';
+      curveCtx.font = '9px sans-serif';
+      curveCtx.textAlign = 'center';
+      curveCtx.fillText('0', pad, pad + ph + 12);
+      curveCtx.fillText('period', pad + pw / 2, pad + ph + 12);
+      curveCtx.fillText('1', pad + pw, pad + ph + 12);
+      curveCtx.save();
+      curveCtx.translate(pad - 4, pad + ph / 2);
+      curveCtx.rotate(-Math.PI / 2);
+      curveCtx.fillText('rain', 0, 0);
+      curveCtx.restore();
+    }
+
+    // Mouse interaction
+    let dragIdx = -1;
+    const CURVE_PAD = 8;
+    function canvasXYToNorm(ex, ey) {
+      const rect = curveCanvas.getBoundingClientRect();
+      const sx = (ex - rect.left) / rect.width * curveCanvas.width;
+      const sy = (ey - rect.top) / rect.height * curveCanvas.height;
+      const pw = curveCanvas.width - CURVE_PAD * 2;
+      const ph = curveCanvas.height - CURVE_PAD * 2;
+      return { x: Math.max(0, Math.min(1, (sx - CURVE_PAD) / pw)), y: Math.max(0, Math.min(1, 1 - (sy - CURVE_PAD) / ph)) };
+    }
+    function findNearestPoint(nx, ny) {
+      const W = curveCanvas.width, H = curveCanvas.height;
+      const pw = W - CURVE_PAD * 2, ph = H - CURVE_PAD * 2;
+      let best = -1, bestD = Infinity;
+      for (let i = 0; i < curvePoints.length; i++) {
+        const dx = (curvePoints[i].x - nx) * pw;
+        const dy = (curvePoints[i].y - ny) * ph;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return bestD < 15 * 15 ? best : -1;
+    }
+
+    curveCanvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      const n = canvasXYToNorm(e.clientX, e.clientY);
+      if (e.button === 2) {
+        // Right-click: remove point (not endpoints)
+        const idx = findNearestPoint(n.x, n.y);
+        if (idx > 0 && idx < curvePoints.length - 1) {
+          curvePoints.splice(idx, 1);
+          drawCurve();
+        }
+        return;
+      }
+      const idx = findNearestPoint(n.x, n.y);
+      if (idx >= 0) {
+        dragIdx = idx;
+      } else {
+        // Add a new point
+        curvePoints.push({ x: n.x, y: n.y });
+        curvePoints.sort((a, b) => a.x - b.x);
+        dragIdx = curvePoints.findIndex(p => p.x === n.x && p.y === n.y);
+        drawCurve();
+      }
+      curveCanvas.setPointerCapture(e.pointerId);
+    });
+    curveCanvas.addEventListener('pointermove', e => {
+      if (dragIdx < 0) return;
+      const n = canvasXYToNorm(e.clientX, e.clientY);
+      const p = curvePoints[dragIdx];
+      p.y = n.y;
+      // Endpoints stay at x=0 / x=1, inner points can move horizontally
+      if (dragIdx > 0 && dragIdx < curvePoints.length - 1) {
+        const lo = curvePoints[dragIdx - 1].x + 0.005;
+        const hi = curvePoints[dragIdx + 1].x - 0.005;
+        p.x = Math.max(lo, Math.min(hi, n.x));
+      }
+      drawCurve();
+    });
+    curveCanvas.addEventListener('pointerup', () => { dragIdx = -1; });
+    curveCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // Presets
+    document.getElementById('curvePresetBurst').addEventListener('click', () => {
+      curvePoints = [{ x: 0, y: 1 }, { x: 0.08, y: 0.6 }, { x: 0.25, y: 0.15 }, { x: 1, y: 0 }];
+      drawCurve();
+    });
+    document.getElementById('curvePresetSine').addEventListener('click', () => {
+      curvePoints = [];
+      for (let i = 0; i <= 8; i++) {
+        curvePoints.push({ x: i / 8, y: 0.5 + 0.5 * Math.sin(i / 8 * Math.PI * 2) });
+      }
+      drawCurve();
+    });
+    document.getElementById('curvePresetFlat').addEventListener('click', () => {
+      curvePoints = [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }];
+      drawCurve();
+    });
+    document.getElementById('curvePresetReset').addEventListener('click', () => {
+      curvePoints = [{ x: 0, y: 1 }, { x: 0.08, y: 0.6 }, { x: 0.25, y: 0.15 }, { x: 1, y: 0 }];
+      drawCurve();
+    });
+
+    // Panel toggle
+    curveBtnEl.addEventListener('click', () => {
+      const vis = curvePanelEl.style.display !== 'block';
+      curvePanelEl.style.display = vis ? 'block' : 'none';
+      if (vis) drawCurve();
+    });
+    curveCloseEl.addEventListener('click', () => { curvePanelEl.style.display = 'none'; });
+
+    function currentRainLevel() {
+      const base = params.rain, amp = params.rainAmp;
+      const period = Math.max(1, params.rainPeriod | 0);
+      const phase = (tick % period) / period;
+      const curveVal = Math.max(0, sampleCurve(phase));
+      return Math.max(0, base + amp * curveVal);
+    }
+
+    const rainFillEl = document.getElementById('rainFill');
+    const rainNowEl = document.getElementById('rainNow');
+    function updateRainMeter() {
+      if (!rainFillEl || !rainNowEl) return;
+      const level = currentRainLevel();
+      const denom = Math.max(1e-6, params.rain + params.rainAmp);
+      const pct = Math.max(0, Math.min(1, level / denom));
+      rainFillEl.style.height = `${(pct * 100).toFixed(1)}%`;
+      rainNowEl.textContent = level.toFixed(2);
+      if (curvePanelEl.style.display === 'block') drawCurve();
+    }
+
+    // -------- WebGL2 GPU CA --------
+    const gl = overlayCanvas.getContext('webgl2', { premultipliedAlpha: false, alpha: true, antialias: false });
+    if (!gl) { setErr('WebGL2 not available'); throw new Error('no webgl2'); }
+    const extFloat = gl.getExtension('EXT_color_buffer_float');
+    if (!extFloat) { setErr('EXT_color_buffer_float not available'); throw new Error('no float fbo'); }
+
+    function compileShader(src, type) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(s);
+        gl.deleteShader(s);
+        throw new Error(log);
+      }
+      return s;
+    }
+    function linkProgram(vs, fs) {
+      const p = gl.createProgram();
+      gl.attachShader(p, vs);
+      gl.attachShader(p, fs);
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        const log = gl.getProgramInfoLog(p);
+        gl.deleteProgram(p);
+        throw new Error(log);
+      }
+      return p;
+    }
+    function makeProgram(vsSrc, fsSrc) {
+      const vs = compileShader(vsSrc, gl.VERTEX_SHADER);
+      const fs = compileShader(fsSrc, gl.FRAGMENT_SHADER);
+      return linkProgram(vs, fs);
+    }
+
+    // Full-screen-quad vertex shader (shared by all programs)
+    const QUAD_VS = `#version 300 es
+      in vec2 a_pos;
+      out vec2 v_uv;
+      void main() {
+        v_uv = a_pos * 0.5 + 0.5;
+        gl_Position = vec4(a_pos, 0.0, 1.0);
+      }
+    `;
+
+    // CA step fragment shader
+    const CA_FS = `#version 300 es
+      precision highp float;
+      in vec2 v_uv;
+      uniform sampler2D u_W;    // water (R32F)
+      uniform sampler2D u_H;    // terrain height (R32F)
+      uniform sampler2D u_valid; // valid mask (R8)
+      uniform sampler2D u_brush; // brush delta (R32F)
+      uniform float u_flow;
+      uniform float u_rain;
+      uniform float u_evap;
+      uniform vec2 u_texelSize;
+      out float outW;
+
+      void main() {
+        float v = texture(u_valid, v_uv).r;
+        if (v < 0.5) { outW = 0.0; return; }
+
+        float wHere = texture(u_W, v_uv).r;
+        float hHere = texture(u_H, v_uv).r;
+        float brushAdd = texture(u_brush, v_uv).r;
+
+        wHere += u_rain + brushAdd;
+
+        if (wHere <= 0.0) { outW = 0.0; return; }
+
+        float sHere = hHere + wHere;
+        float flow = clamp(u_flow, 0.0, 1.0);
+
+        // Surface-leveling outflow: send water to neighbors with lower surface
+        // Use Jacobi-safe fraction: 1/(nLower+1) prevents oscillation
+        float wgts[8];
+        int idx = 0;
+        float sumWgt = 0.0;
+        float avgLowerS = 0.0;
+        float nLower = 0.0;
+        for (int oy = -1; oy <= 1; oy++) {
+          for (int ox = -1; ox <= 1; ox++) {
+            if (ox == 0 && oy == 0) continue;
+            wgts[idx] = 0.0;
+            vec2 nuv = v_uv + vec2(float(ox), float(oy)) * u_texelSize;
+            float nv = texture(u_valid, nuv).r;
+            if (nv < 0.5) { idx++; continue; }
+            float nh = texture(u_H, nuv).r;
+            float nw = texture(u_W, nuv).r;
+            float sN = nh + nw;
+            float diff = sHere - sN;
+            if (diff > 0.0) {
+              float dist = length(vec2(float(ox), float(oy)));
+              float w = diff / dist;
+              wgts[idx] = w;
+              sumWgt += w;
+              avgLowerS += sN;
+              nLower += 1.0;
+            }
+            idx++;
+          }
+        }
+
+        float newW = wHere;
+        if (nLower > 0.0) {
+          avgLowerS /= nLower;
+          // Target: bring surface partway toward the weighted average of lower neighbors
+          float excess = sHere - avgLowerS;
+          float outAmt = flow * excess / (nLower + 1.0);
+          outAmt = min(outAmt, wHere);
+          outAmt = max(outAmt, 0.0);
+          newW = wHere - outAmt;
+        }
+
+        newW *= max(0.0, 1.0 - u_evap);
+
+        // Surface-leveling inflow: receive water from neighbors with higher surface
+        float received = 0.0;
+        for (int oy = -1; oy <= 1; oy++) {
+          for (int ox = -1; ox <= 1; ox++) {
+            if (ox == 0 && oy == 0) continue;
+            vec2 nuv = v_uv + vec2(float(ox), float(oy)) * u_texelSize;
+            float nv = texture(u_valid, nuv).r;
+            if (nv < 0.5) continue;
+            float nh = texture(u_H, nuv).r;
+            float nw = texture(u_W, nuv).r;
+            float nBrush = texture(u_brush, nuv).r;
+            float nwFull = nw + u_rain + nBrush;
+            if (nwFull <= 0.0) continue;
+            float sN = nh + nwFull;
+            float sMe = hHere + wHere;
+            if (sN <= sMe) continue;
+
+            // Recompute that neighbor's outflow using the same stable method
+            float nAvgS = 0.0;
+            float nCntLower = 0.0;
+            float nSumWgt = 0.0;
+            float wgtToUs = 0.0;
+            for (int dy = -1; dy <= 1; dy++) {
+              for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dy == 0) continue;
+                vec2 nnuv = nuv + vec2(float(dx), float(dy)) * u_texelSize;
+                float nnv = texture(u_valid, nnuv).r;
+                if (nnv < 0.5) continue;
+                float nnh = texture(u_H, nnuv).r;
+                float nnw = texture(u_W, nnuv).r;
+                float sNN = nnh + nnw;
+                float diff = sN - sNN;
+                if (diff > 0.0) {
+                  float dist = length(vec2(float(dx), float(dy)));
+                  float w = diff / dist;
+                  nSumWgt += w;
+                  nAvgS += sNN;
+                  nCntLower += 1.0;
+                  if (dx == -ox && dy == -oy) wgtToUs = w;
+                }
+              }
+            }
+            if (nCntLower > 0.0 && nSumWgt > 0.0 && wgtToUs > 0.0) {
+              nAvgS /= nCntLower;
+              float nExcess = sN - nAvgS;
+              float nOutAmt = flow * nExcess / (nCntLower + 1.0);
+              nOutAmt = min(nOutAmt, nwFull);
+              nOutAmt = max(nOutAmt, 0.0);
+              received += nOutAmt * (wgtToUs / nSumWgt);
+            }
+          }
+        }
+
+        newW += received;
+        outW = max(0.0, newW);
+      }
+    `;
+
+    // Render (heatmap + optional DEM grayscale) fragment shader
+    const RENDER_FS = `#version 300 es
+      precision highp float;
+      in vec2 v_uv;
+      uniform sampler2D u_W;
+      uniform sampler2D u_H;
+      uniform sampler2D u_valid;
+      uniform float u_opacity;
+      uniform float u_showDem;
+      uniform float u_showWater;
+      uniform float u_hMin;
+      uniform float u_hMax;
+      uniform vec2 u_texelSize;
+      out vec4 fragColor;
+
+      void main() {
+        float v = texture(u_valid, v_uv).r;
+        if (v < 0.5) { fragColor = vec4(0.0); return; }
+
+        vec3 result = vec3(0.0);
+        float resultA = 0.0;
+
+        // DEM hillshade + elevation tint
+        if (u_showDem > 0.5) {
+          vec2 ts = u_texelSize;
+          float hC = texture(u_H, v_uv).r;
+          float hL = texture(u_H, v_uv + vec2(-ts.x, 0.0)).r;
+          float hR = texture(u_H, v_uv + vec2( ts.x, 0.0)).r;
+          float hD = texture(u_H, v_uv + vec2(0.0, -ts.y)).r;
+          float hU = texture(u_H, v_uv + vec2(0.0,  ts.y)).r;
+
+          // Terrain normal from central differences (z-exaggeration for crispness)
+          float zScale = 2.5;
+          vec3 normal = normalize(vec3((hL - hR) * zScale, (hD - hU) * zScale, 2.0));
+
+          // Light from upper-left (NW, azimuth 315 deg, altitude 45 deg)
+          vec3 lightDir = normalize(vec3(-1.0, 1.0, 1.0));
+          float shade = dot(normal, lightDir) * 0.5 + 0.5;
+          shade = clamp(shade, 0.15, 1.0);
+
+          // Blend elevation tint with hillshade
+          float nrm = clamp((hC - u_hMin) / (u_hMax - u_hMin), 0.0, 1.0);
+          float lum = mix(shade, nrm, 0.3);
+          result = vec3(lum);
+          resultA = 0.7;
+        }
+
+        // Water heatmap on top
+        if (u_showWater > 0.5) {
+          float ww = texture(u_W, v_uv).r;
+          float t = 1.0 - exp(-max(0.0, ww) * 0.18);
+          float waterAlpha = min(1.0, max(0.0, ww) * 2.8) * u_opacity;
+          vec3 c;
+          if (t < 0.25) {
+            float k = t / 0.25;
+            c = vec3(0.0, k, (160.0 + 95.0 * k) / 255.0);
+          } else if (t < 0.5) {
+            float k = (t - 0.25) / 0.25;
+            c = vec3(k, 1.0, 1.0 - k);
+          } else if (t < 0.75) {
+            float k = (t - 0.5) / 0.25;
+            c = vec3(1.0, 1.0 - k, 0.0);
+          } else {
+            float k = (t - 0.75) / 0.25;
+            c = vec3(1.0, 40.0 * k / 255.0, 0.0);
+          }
+          result = result * (1.0 - waterAlpha) + c * waterAlpha;
+          resultA = resultA * (1.0 - waterAlpha) + waterAlpha;
+        }
+
+        fragColor = vec4(result, resultA);
+      }
+    `;
+
+    const caProg = makeProgram(QUAD_VS, CA_FS);
+    const renderProg = makeProgram(QUAD_VS, RENDER_FS);
+
+    // Fullscreen quad VAO
+    const quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+    function setupVAO(prog) {
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+      const loc = gl.getAttribLocation(prog, 'a_pos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+      return vao;
+    }
+    const caVAO = setupVAO(caProg);
+    const renderVAO = setupVAO(renderProg);
+
+    // Textures & FBOs for ping-pong water simulation
+    let wTex = [null, null], wFbo = [null, null];
+    let hTex = null, validTex = null, brushTex = null;
+    let gpuN = 0;
+    let wPing = 0; // current read index
+
+    function makeR32FTex(w, h, data) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data || null);
+      return tex;
+    }
+    function makeR8Tex(w, h, data) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, data || null);
+      return tex;
+    }
+    function makeFBO(tex) {
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      return fbo;
+    }
+
+    function gpuAlloc(n) {
+      if (gpuN === n) return;
+      gpuN = n;
+      for (let i = 0; i < 2; i++) {
+        if (wTex[i]) gl.deleteTexture(wTex[i]);
+        if (wFbo[i]) gl.deleteFramebuffer(wFbo[i]);
+        wTex[i] = makeR32FTex(n, n, null);
+        wFbo[i] = makeFBO(wTex[i]);
+      }
+      if (hTex) gl.deleteTexture(hTex);
+      if (validTex) gl.deleteTexture(validTex);
+      if (brushTex) gl.deleteTexture(brushTex);
+      hTex = makeR32FTex(n, n, null);
+      validTex = makeR8Tex(n, n, null);
+      brushTex = makeR32FTex(n, n, new Float32Array(n * n));
+      wPing = 0;
+      tick = 0;
+    }
+
+    // Upload H and valid from CPU-side DEM sampling
+    function rebuildGpuTerrain() {
+      if (!demHeights) return;
+      const rect = overlayCanvas.getBoundingClientRect();
+      const cw = rect.width, ch = rect.height;
+      const hData = new Float32Array(gpuN * gpuN);
+      const vData = new Uint8Array(gpuN * gpuN);
+      for (let y = 0; y < gpuN; y++) {
+        const sy = ((gpuN - 1 - y) / (gpuN - 1)) * ch; // flip Y: tex row 0 = screen bottom
+        for (let x = 0; x < gpuN; x++) {
+          const sx = (x / (gpuN - 1)) * cw;
+          const uv = demUvFromScreenPx(sx, sy);
+          const k = y * gpuN + x;
+          if (uv.inside) {
+            vData[k] = 255;
+            hData[k] = sampleDemHeightUV(uv.u, uv.v);
+          }
+        }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, hTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, hData);
+      gl.bindTexture(gl.TEXTURE_2D, validTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gpuN, gpuN, 0, gl.RED, gl.UNSIGNED_BYTE, vData);
+      mappingDirty = false;
+
+      // Compute viewport min/max elevation for DEM grayscale normalization
+      let hMin = Infinity, hMax = -Infinity;
+      for (let i = 0; i < hData.length; i++) {
+        if (vData[i] < 128) continue;
+        const h = hData[i];
+        if (h < hMin) hMin = h;
+        if (h > hMax) hMax = h;
+      }
+      if (!Number.isFinite(hMin) || hMin >= hMax) { hMin = 0; hMax = 1; }
+      demHMin = hMin;
+      demHMax = hMax;
+    }
+
+    function gpuResetWater() {
+      const zeros = new Float32Array(gpuN * gpuN);
+      for (let i = 0; i < 2; i++) {
+        gl.bindTexture(gl.TEXTURE_2D, wTex[i]);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, zeros);
+      }
+      tick = 0;
+      wPing = 0;
+    }
+
+    // Brush: build a CPU Float32 array with radial falloff, upload to brushTex
+    let brushDirty = false;
+    let brushData = null;
+    function clearBrush() {
+      if (!brushData || brushData.length !== gpuN * gpuN)
+        brushData = new Float32Array(gpuN * gpuN);
+      else
+        brushData.fill(0);
+      brushDirty = true;
+    }
+    function paintAtCssPx(sx, sy) {
+      if (!brushData) return;
+      const rect = overlayCanvas.getBoundingClientRect();
+      const cw = rect.width, ch = rect.height;
+      if (cw <= 0 || ch <= 0) return;
+      const fx = (sx / cw) * (gpuN - 1);
+      const fy = ((ch - sy) / ch) * (gpuN - 1); // flip Y: screen top→texture bottom
+      const cx = Math.round(fx), cy = Math.round(fy);
+      const R = Math.max(1, Math.min(60, params.brushSize | 0));
+      const add = Math.max(0, params.brushAmt) * 0.02;
+      const r2 = R * R;
+      for (let oy = -R; oy <= R; oy++) {
+        const y = cy + oy;
+        if (y < 0 || y >= gpuN) continue;
+        for (let ox = -R; ox <= R; ox++) {
+          const x = cx + ox;
+          if (x < 0 || x >= gpuN) continue;
+          const d2 = ox * ox + oy * oy;
+          if (d2 > r2) continue;
+          brushData[y * gpuN + x] += add * (1 - d2 / r2);
+        }
+      }
+      brushDirty = true;
+    }
+
+    function uploadBrush() {
+      if (!brushDirty || !brushData) return;
+      gl.bindTexture(gl.TEXTURE_2D, brushTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, brushData);
+      brushDirty = false;
+    }
+
+    // Run one CA step on GPU
+    function gpuCaStep() {
+      const readIdx = wPing;
+      const writeIdx = 1 - wPing;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, wFbo[writeIdx]);
+      gl.viewport(0, 0, gpuN, gpuN);
+      gl.useProgram(caProg);
+      gl.bindVertexArray(caVAO);
+
+      const bind = (name, unit, tex) => {
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.uniform1i(gl.getUniformLocation(caProg, name), unit);
+      };
+      bind('u_W', 0, wTex[readIdx]);
+      bind('u_H', 1, hTex);
+      bind('u_valid', 2, validTex);
+      bind('u_brush', 3, brushTex);
+
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_flow'), params.flow);
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_rain'), currentRainLevel() * 0.0022);
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_evap'), params.evap);
+      gl.uniform2f(gl.getUniformLocation(caProg, 'u_texelSize'), 1.0 / gpuN, 1.0 / gpuN);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      wPing = writeIdx;
+      tick++;
+    }
+
+    // Render heatmap (+ optional DEM grayscale) to the overlay canvas
+    function gpuRender() {
+      const w = overlayCanvas.width, h = overlayCanvas.height;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      gl.useProgram(renderProg);
+      gl.bindVertexArray(renderVAO);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, wTex[wPing]);
+      gl.uniform1i(gl.getUniformLocation(renderProg, 'u_W'), 0);
+
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, validTex);
+      gl.uniform1i(gl.getUniformLocation(renderProg, 'u_valid'), 1);
+
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, hTex);
+      gl.uniform1i(gl.getUniformLocation(renderProg, 'u_H'), 2);
+
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_opacity'), params.op);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showDem'), showDemLayer ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showWater'), showWaterLayer ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_hMin'), demHMin);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_hMax'), demHMax);
+      gl.uniform2f(gl.getUniformLocation(renderProg, 'u_texelSize'), 1.0 / gpuN, 1.0 / gpuN);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.disable(gl.BLEND);
+    }
+
+    // -------- Brush UI --------
+    const paintLayerEl = document.getElementById('paintLayer');
+    const brushPopoverEl = document.getElementById('brushPopover');
+    const brushBtnEl = document.getElementById('brushBtnFloating');
+    const brushCloseEl = document.getElementById('brushClose');
+    const brushOnEl = document.getElementById('brushOn');
+    const brushSizeEl = document.getElementById('brushSize');
+    const brushSizeValEl = document.getElementById('brushSize-val');
+    const brushAmtEl = document.getElementById('brushAmt');
+    const brushAmtValEl = document.getElementById('brushAmt-val');
+
+    function setBrushEnabled(on) {
+      params.brushOn = !!on;
+      if (brushOnEl) brushOnEl.checked = params.brushOn;
+      if (paintLayerEl) paintLayerEl.style.pointerEvents = params.brushOn ? 'auto' : 'none';
+      if (params.brushOn) {
+        try { map.dragPan.disable(); map.scrollZoom.disable(); map.dragRotate.disable(); map.touchZoomRotate.disable(); } catch {}
+      } else {
+        try { map.dragPan.enable(); map.scrollZoom.enable(); map.dragRotate.enable(); map.touchZoomRotate.enable(); } catch {}
+      }
+    }
+    function openBrushPopover(open) {
+      if (brushPopoverEl) brushPopoverEl.style.display = open ? 'block' : 'none';
+      if (open) setBrushEnabled(true);
+    }
+    let painting = false;
+    function onPaintPointerDown(e) { if (!params.brushOn) return; painting = true; try { paintLayerEl.setPointerCapture(e.pointerId); } catch {} e.preventDefault(); paintAtCssPx(e.clientX, e.clientY); }
+    function onPaintPointerMove(e) { if (!painting || !params.brushOn) return; e.preventDefault(); paintAtCssPx(e.clientX, e.clientY); }
+    function onPaintPointerUp(e) { if (!params.brushOn) return; painting = false; try { paintLayerEl.releasePointerCapture(e.pointerId); } catch {} e.preventDefault(); }
+    if (paintLayerEl) {
+      paintLayerEl.addEventListener('pointerdown', onPaintPointerDown, { passive: false });
+      paintLayerEl.addEventListener('pointermove', onPaintPointerMove, { passive: false });
+      paintLayerEl.addEventListener('pointerup', onPaintPointerUp, { passive: false });
+      paintLayerEl.addEventListener('pointercancel', onPaintPointerUp, { passive: false });
+      paintLayerEl.addEventListener('contextmenu', (e) => { if (params.brushOn) e.preventDefault(); });
+    }
+    if (brushBtnEl) brushBtnEl.addEventListener('click', () => openBrushPopover(true));
+    if (brushCloseEl) brushCloseEl.addEventListener('click', () => openBrushPopover(false));
+    if (brushOnEl) brushOnEl.addEventListener('change', (e) => setBrushEnabled(e.target.checked));
+    if (brushSizeEl && brushSizeValEl) {
+      const sync = () => { params.brushSize = (parseInt(brushSizeEl.value, 10) | 0); brushSizeValEl.textContent = String(params.brushSize); };
+      brushSizeEl.addEventListener('input', sync); sync();
+    }
+    if (brushAmtEl && brushAmtValEl) {
+      const sync = () => { params.brushAmt = parseFloat(brushAmtEl.value); brushAmtValEl.textContent = params.brushAmt.toFixed(1); };
+      brushAmtEl.addEventListener('input', sync); sync();
+    }
+    setBrushEnabled(params.brushOn);
+
+    // -------- UI --------
+    const hudEl = document.getElementById('hud');
+    const hudToggleEl = document.getElementById('hudToggle');
+    const applyHudCollapsed = (collapsed) => {
+      if (!hudEl) return;
+      hudEl.classList.toggle('collapsed', !!collapsed);
+      try { localStorage.setItem('caGpuHudCollapsed', collapsed ? '1' : '0'); } catch {}
+    };
+    try { applyHudCollapsed(localStorage.getItem('caGpuHudCollapsed') === '1'); } catch {}
+    if (hudToggleEl) hudToggleEl.addEventListener('click', () => applyHudCollapsed(!hudEl.classList.contains('collapsed')));
+
+    document.getElementById('run').addEventListener('change', e => params.run = e.target.checked);
+
+    // Layer toggles
+    document.getElementById('layerSat').addEventListener('change', e => {
+      map.setLayoutProperty('base', 'visibility', e.target.checked ? 'visible' : 'none');
+    });
+    function updateOverlayStyle() {
+      overlayCanvas.style.display = (showDemLayer || showWaterLayer) ? '' : 'none';
+      overlayCanvas.style.mixBlendMode = (showDemLayer && !showWaterLayer) ? 'normal' : 'screen';
+    }
+    document.getElementById('layerDem').addEventListener('change', e => {
+      showDemLayer = e.target.checked;
+      updateOverlayStyle();
+    });
+    document.getElementById('layerWater').addEventListener('change', e => {
+      showWaterLayer = e.target.checked;
+      updateOverlayStyle();
+    });
+    const bindR = (id, outId, fmt, set) => {
+      const el = document.getElementById(id);
+      const out = document.getElementById(outId);
+      const sync = () => { const v = parseFloat(el.value); set(v); out.textContent = fmt(v); };
+      el.addEventListener('input', sync); sync();
+    };
+    bindR('grid', 'grid-val', v => String(v|0), v => {
+      N = v | 0;
+      gpuAlloc(N);
+      clearBrush();
+      mappingDirty = true;
+    });
+    bindR('flow', 'flow-val', v => v.toFixed(2), v => params.flow = v);
+    bindR('rain', 'rain-val', v => v.toFixed(2), v => params.rain = v);
+    bindR('rainAmp', 'rainAmp-val', v => v.toFixed(2), v => params.rainAmp = v);
+    bindR('rainPeriod', 'rainPeriod-val', v => String(v|0), v => params.rainPeriod = v|0);
+    bindR('evap', 'evap-val', v => v.toFixed(3), v => params.evap = v);
+    bindR('steps', 'steps-val', v => String(v|0), v => params.steps = v|0);
+    bindR('op', 'op-val', v => v.toFixed(2), v => params.op = v);
+    document.getElementById('reset').addEventListener('click', () => gpuResetWater());
+    document.getElementById('reloadDem').addEventListener('click', async () => {
+      try { await loadDemAtCenter(); mappingDirty = true; } catch (e) { setErr(String(e && e.message ? e.message : e)); }
+    });
+
+    // -------- Loop --------
+    function resize() {
+      const r = overlayCanvas.getBoundingClientRect();
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(r.width * dpr));
+      const h = Math.max(1, Math.floor(r.height * dpr));
+      if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
+        overlayCanvas.width = w;
+        overlayCanvas.height = h;
+        mappingDirty = true;
+      }
+    }
+
+    function frame() {
+      resize();
+      if (demHeights && gpuN > 0) {
+        if (mappingDirty) rebuildGpuTerrain();
+        if (params.run) {
+          uploadBrush();
+          for (let i = 0; i < params.steps; i++) gpuCaStep();
+          clearBrush();
+        }
+        updateRainMeter();
+        gpuRender();
+      }
+      requestAnimationFrame(frame);
+    }
+
+    map.on('load', async () => {
+      try {
+        gpuAlloc(N);
+        clearBrush();
+        await loadDemAtCenter();
+        mappingDirty = true;
+        map.on('move', () => { mappingDirty = true; });
+        map.on('moveend', async () => {
+          try { await loadDemAtCenter(); mappingDirty = true; } catch (e) { setErr(String(e && e.message ? e.message : e)); }
+        });
+        frame();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+  </script>
+</body>
+</html>
