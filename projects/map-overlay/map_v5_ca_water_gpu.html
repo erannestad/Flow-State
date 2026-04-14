@@ -170,10 +170,33 @@
     }
     #hud .layers .lrow label { width: auto; font-size: 11px; color:#e8eaed; }
     #hud .layers .lrow input { accent-color: #8ab4f8; }
+    #demLoading {
+      position: absolute; inset: 0; z-index: 8;
+      display: none; align-items: center; justify-content: center;
+      flex-direction: column; gap: 14px;
+      pointer-events: auto;
+      background: rgba(10, 12, 14, 0.78);
+      backdrop-filter: blur(5px);
+    }
+    #demLoading.visible { display: flex; }
+    #demLoading .demSpinner {
+      width: 36px; height: 36px; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: rgba(138, 180, 248, 0.95);
+      animation: demSpin 0.75s linear infinite;
+    }
+    @keyframes demSpin { to { transform: rotate(360deg); } }
+    #demLoading .demLabel {
+      font-size: 13px; color: #e8eaed; letter-spacing: 0.02em;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="demLoading" aria-live="polite" aria-busy="false">
+    <div class="demSpinner" aria-hidden="true"></div>
+    <div class="demLabel">Loading elevation…</div>
+  </div>
   <canvas id="overlay"></canvas>
   <div id="paintLayer" aria-hidden="true"></div>
   <button id="curveBtnFloating" title="Rain curve editor" aria-label="Rain curve editor">&#x2f0f;</button>
@@ -296,6 +319,7 @@
       </div>
       <div class="hint">
         GPU-accelerated CA water runoff. Same model as v4 but the CA step + heatmap run entirely on the GPU via WebGL2 fragment shaders.
+        Pan and zoom remap the sim to the view; Reload DEM fetches Terrarium for the current view and resets water.
         <span style="display:inline-block;margin-left:6px;">
           <a href="./map_v4_ca_water_readme.html" target="_blank" rel="noopener" style="color:#8ab4f8;text-decoration:none;">README</a>
         </span>
@@ -332,9 +356,24 @@
     let showWaterLayer = true;
     let demHMin = 0, demHMax = 1;
     const errEl = document.getElementById('err');
+    const demLoadingEl = document.getElementById('demLoading');
     function setErr(msg) {
       errEl.style.display = msg ? 'block' : 'none';
       errEl.textContent = msg || '';
+    }
+    let demLoadingRef = 0;
+    function syncDemLoadingUI() {
+      const on = demLoadingRef > 0;
+      demLoadingEl.classList.toggle('visible', on);
+      demLoadingEl.setAttribute('aria-busy', on ? 'true' : 'false');
+    }
+    function beginDemLoading() {
+      demLoadingRef++;
+      syncDemLoadingUI();
+    }
+    function endDemLoading() {
+      demLoadingRef = Math.max(0, demLoadingRef - 1);
+      syncDemLoadingUI();
     }
 
     // -------- DEM (same tile cache as v4) --------
@@ -389,36 +428,41 @@
       }
     }
     async function loadDemAtCenter() {
-      setErr('');
-      const gen = ++demLoadGen;
-      const bounds = map.getBounds();
-      const nw = bounds.getNorthWest(), se = bounds.getSouthEast();
-      const txMin = lonToTileX(nw.lng, DEM_Z), txMax = lonToTileX(se.lng, DEM_Z);
-      const tyMin = latToTileY(nw.lat, DEM_Z), tyMax = latToTileY(se.lat, DEM_Z);
-      const ox = txMin - 1, oy = tyMin - 1;
-      const mw = (txMax - txMin) + 3, mh = (tyMax - tyMin) + 3;
-      const jobs = [];
-      for (let j = 0; j < mh; j++)
-        for (let i = 0; i < mw; i++) {
-          const tx = ox + i, ty = oy + j;
-          jobs.push(fetchTile(tx, ty).then(img => img ? { img, i, j } : null));
-        }
-      const tiles = await Promise.all(jobs);
-      if (gen !== demLoadGen) return;
-      tileOrigin = { x: ox, y: oy };
-      MOSAIC_W = mw; MOSAIC_H = mh;
-      demCanvas.width = TILE * MOSAIC_W;
-      demCanvas.height = TILE * MOSAIC_H;
-      demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
-      dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
-      for (const t of tiles) if (t) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
-      const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
-      const w = demCanvas.width, h = demCanvas.height;
-      const out = new Float32Array(w * h);
-      const d = img.data;
-      for (let i = 0; i < w * h; i++) out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
-      demHeights = out;
-      purgeTileCache(txMin, txMax, tyMin, tyMax);
+      beginDemLoading();
+      try {
+        setErr('');
+        const gen = ++demLoadGen;
+        const bounds = map.getBounds();
+        const nw = bounds.getNorthWest(), se = bounds.getSouthEast();
+        const txMin = lonToTileX(nw.lng, DEM_Z), txMax = lonToTileX(se.lng, DEM_Z);
+        const tyMin = latToTileY(nw.lat, DEM_Z), tyMax = latToTileY(se.lat, DEM_Z);
+        const ox = txMin - 1, oy = tyMin - 1;
+        const mw = (txMax - txMin) + 3, mh = (tyMax - tyMin) + 3;
+        const jobs = [];
+        for (let j = 0; j < mh; j++)
+          for (let i = 0; i < mw; i++) {
+            const tx = ox + i, ty = oy + j;
+            jobs.push(fetchTile(tx, ty).then(img => img ? { img, i, j } : null));
+          }
+        const tiles = await Promise.all(jobs);
+        if (gen !== demLoadGen) return;
+        tileOrigin = { x: ox, y: oy };
+        MOSAIC_W = mw; MOSAIC_H = mh;
+        demCanvas.width = TILE * MOSAIC_W;
+        demCanvas.height = TILE * MOSAIC_H;
+        demOriginWorldPx = { x: tileOrigin.x * TILE, y: tileOrigin.y * TILE };
+        dem2d.clearRect(0, 0, demCanvas.width, demCanvas.height);
+        for (const t of tiles) if (t) dem2d.drawImage(t.img, t.i * TILE, t.j * TILE);
+        const img = dem2d.getImageData(0, 0, demCanvas.width, demCanvas.height);
+        const w = demCanvas.width, h = demCanvas.height;
+        const out = new Float32Array(w * h);
+        const d = img.data;
+        for (let i = 0; i < w * h; i++) out[i] = decodeTerrarium(d[i*4], d[i*4+1], d[i*4+2]);
+        demHeights = out;
+        purgeTileCache(txMin, txMax, tyMin, tyMax);
+      } finally {
+        endDemLoading();
+      }
     }
     function sampleDemHeightUV(u, v) {
       if (!demHeights) return NaN;
@@ -438,6 +482,14 @@
     // -------- Params --------
     let N = 512;
     let mappingDirty = true;
+    let mappingPending = true;
+    let mapInteracting = false;
+    /** Coalesces moveend/zoomend/rotateend so one pan/zoom settles once. */
+    let mapSettleTimer = null;
+    const MAP_SETTLE_MS = 120;
+    /** Throttle CPU remaps to GPU during drag/zoom (ms between rebuildGpuTerrain). */
+    let lastTerrainRemapMs = 0;
+    const INTERACT_REMAP_MS = 36;
     const params = {
       run: true,
       flow: 0.81,
@@ -1248,7 +1300,27 @@
     bindR('op', 'op-val', v => v.toFixed(2), v => params.op = v);
     document.getElementById('reset').addEventListener('click', () => gpuResetWater());
     document.getElementById('reloadDem').addEventListener('click', async () => {
-      try { await loadDemAtCenter(); mappingDirty = true; } catch (e) { setErr(String(e && e.message ? e.message : e)); }
+      try {
+        setErr('');
+        if (mapSettleTimer) {
+          clearTimeout(mapSettleTimer);
+          mapSettleTimer = null;
+        }
+        mapInteracting = false;
+        // Hard reset at current map center/zoom/bounds: new terrarium mosaic + fresh water + brush.
+        // loadDemAtCenter() bumps demLoadGen (invalidates in-flight loads); do not double-increment.
+        demHeights = null;
+        tileCache.clear();
+        await loadDemAtCenter();
+        if (!demHeights) return;
+        gpuResetWater();
+        clearBrush();
+        mappingDirty = true;
+        mappingPending = false;
+        rebuildGpuTerrain();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
     });
 
     // -------- Loop --------
@@ -1267,7 +1339,20 @@
     function frame() {
       resize();
       if (demHeights && gpuN > 0) {
-        if (mappingDirty) rebuildGpuTerrain();
+        const now = performance.now();
+        let shouldRemap = mappingDirty;
+        if (mappingPending) {
+          if (!mapInteracting) {
+            shouldRemap = true;
+          } else if (mappingDirty || now - lastTerrainRemapMs >= INTERACT_REMAP_MS) {
+            shouldRemap = true;
+          }
+        }
+        if (shouldRemap) {
+          rebuildGpuTerrain();
+          lastTerrainRemapMs = now;
+          if (!mapInteracting) mappingPending = false;
+        }
         if (params.run) {
           uploadBrush();
           for (let i = 0; i < params.steps; i++) gpuCaStep();
@@ -1285,10 +1370,42 @@
         clearBrush();
         await loadDemAtCenter();
         mappingDirty = true;
-        map.on('move', () => { mappingDirty = true; });
-        map.on('moveend', async () => {
-          try { await loadDemAtCenter(); mappingDirty = true; } catch (e) { setErr(String(e && e.message ? e.message : e)); }
-        });
+        mappingPending = true;
+
+        const onInteractStart = () => {
+          mapInteracting = true;
+          lastTerrainRemapMs = 0;
+          if (mapSettleTimer) {
+            clearTimeout(mapSettleTimer);
+            mapSettleTimer = null;
+          }
+        };
+        const onInteractMove = () => { mappingPending = true; };
+        // Pan/zoom/rotate: only remap the CA grid to the current map view against the *existing* DEM
+        // mosaic. Terrarium reload is large and racy if tied to every gesture end — use Reload DEM.
+        const scheduleMapSettled = () => {
+          if (mapSettleTimer) clearTimeout(mapSettleTimer);
+          mapSettleTimer = setTimeout(() => {
+            mapSettleTimer = null;
+            mapInteracting = false;
+            mappingPending = true;
+          }, MAP_SETTLE_MS);
+        };
+
+        map.on('movestart', onInteractStart);
+        map.on('zoomstart', onInteractStart);
+        map.on('rotatestart', onInteractStart);
+        map.on('pitchstart', onInteractStart);
+
+        map.on('move', onInteractMove);
+        map.on('zoom', onInteractMove);
+        map.on('rotate', onInteractMove);
+        map.on('pitch', onInteractMove);
+
+        map.on('moveend', scheduleMapSettled);
+        map.on('zoomend', scheduleMapSettled);
+        map.on('rotateend', scheduleMapSettled);
+        map.on('pitchend', scheduleMapSettled);
         frame();
       } catch (e) {
         setErr(String(e && e.message ? e.message : e));
