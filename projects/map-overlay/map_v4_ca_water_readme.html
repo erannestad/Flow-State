@@ -118,6 +118,38 @@
         Back to the sim: <a href="./map_v4_ca_water.html">`map_v4_ca_water.html`</a>
       </p>
     </div>
+
+    <div class="card" style="margin-top: 16px;">
+      <h1>GPU WebGL builds <span class="pill">`map_v5_ca_water_gpu.html`</span> <span class="pill">`map_v6_ca_water_gpu.html`</span></h1>
+      <p class="muted">
+        Same Terrarium-backed height field and CA-style water mass <code>W</code>, but the step and heatmap run in WebGL2. Pan/zoom remaps the grid to the view; use <b>Reload DEM</b> to fetch a new elevation mosaic for the current map extent.
+      </p>
+      <p class="muted">
+        <a href="./map_v5_ca_water_gpu.html">Open v5 (GPU)</a>
+        ·
+        <a href="./map_v6_ca_water_gpu.html">Open v6 (GPU + flow accumulation)</a>
+      </p>
+
+      <h2>Advect (D8) — v6 only</h2>
+      <p>
+        In <code>map_v6_ca_water_gpu.html</code>, each CA step is a <b>two-pass</b> update on the water texture. First, a mild <b>surface-leveling</b> term spreads water to neighbors using height differences (similar in spirit to the CPU model’s lateral routing). Second, <b>D8 advection</b> moves water along the drainage network derived from the sampled terrain.
+      </p>
+      <ul>
+        <li>
+          <b>Flow directions</b>: from the same <code>H</code> grid used for the sim, the CPU builds a D8 flow direction per cell (steepest descent) and a <b>flow accumulation</b> field used for the optional FA overlay. The CA shader reads the direction texture to know “downhill” for each cell.
+        </li>
+        <li>
+          <b>Slider “Advect (D8)”</b> (internal name <code>faBoost</code>) is converted for the fragment shader as
+          <code>u_advect = faBoost / 20</code>. The on-screen number is therefore <b>20×</b> the normalized advect strength, which is clamped in the shader to <b>0…2</b>.
+        </li>
+        <li>
+          <b>Default</b> <code>faBoost = 30</code> ⇒ <code>u_advect = 1.5</code>. That sets how aggressively water follows the D8 paths each step: <b>push</b> a fraction <code>advect × W<sub>orig</sub></code> out along your downslope direction (using pre-rain <code>W</code>), and <b>pull</b> the same fraction of neighbors’ pre-step water when their D8 arrow points into your cell.
+        </li>
+        <li>
+          <b>0</b> turns off D8 transfer (only the leveling pass remains). <b>Higher</b> values tighten runoff into channels; very high values can move large fractions of <code>W</code> per step, so balance with <b>Flow</b>, <b>Rain</b>, and <b>Steps/frame</b>.
+        </li>
+      </ul>
+    </div>
   </div>
 </body>
 </html>

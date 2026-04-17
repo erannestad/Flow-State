@@ -288,8 +288,8 @@
       </div>
       <div class="row">
         <label>Advect (D8)</label>
-        <input type="range" id="faBoost" min="0" max="20" step="0.1" value="12">
-        <div class="val" id="faBoost-val">12.0</div>
+        <input type="range" id="faBoost" min="0" max="40" step="0.1" value="30">
+        <div class="val" id="faBoost-val">30.0</div>
       </div>
       <div class="row">
         <label>Steps/frame</label>
@@ -660,7 +660,7 @@
       rainAmp: 8.73,
       rainPeriod: 2324,
       evap: 0.008,
-      faBoost: 12.0,
+      faBoost: 30.0,
       steps: 1,
       op: 0.74,
       brushOn: false,
@@ -968,7 +968,7 @@
 
         float sHere = hHere + wHere;
         float flow = clamp(u_flow, 0.0, 1.0);
-        float advect = clamp(u_advect, 0.0, 0.95);
+        float advect = clamp(u_advect, 0.0, 2.0);
 
         // --- Pass A: Surface-leveling (gentle lateral spreading) ---
         float spreadRate = 0.12 * flow;
