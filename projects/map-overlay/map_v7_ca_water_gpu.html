@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Water Flow v6 (GPU CA + DEM + Flow Accumulation)</title>
+  <title>Water Flow v7 (Drawn-extent CA + DEM + Flow Accumulation)</title>
   <link rel="stylesheet" href="./assets/maplibre-gl.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -189,6 +189,40 @@
     #demLoading .demLabel {
       font-size: 13px; color: #e8eaed; letter-spacing: 0.02em;
     }
+    #extentSvg {
+      position: absolute; inset: 0; z-index: 5;
+      pointer-events: none;
+    }
+    #extentSvg polygon.outline {
+      fill: none;
+      stroke: rgba(138, 180, 248, 0.95);
+      stroke-width: 2;
+      stroke-dasharray: 6 4;
+      vector-effect: non-scaling-stroke;
+    }
+    #extentSvg polygon.preview {
+      fill: rgba(138, 180, 248, 0.10);
+      stroke: rgba(138, 180, 248, 0.95);
+      stroke-width: 2;
+      stroke-dasharray: 6 4;
+    }
+    #extentDrawLayer {
+      position: absolute; inset: 0; z-index: 7;
+      display: none; pointer-events: auto;
+      cursor: crosshair;
+      background: rgba(0, 0, 0, 0.0);
+    }
+    #extentDrawLayer.active { display: block; }
+    #extentHint {
+      position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
+      z-index: 9; pointer-events: none;
+      background: rgba(20,20,20,0.86); color: #e8eaed;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 999px; padding: 6px 12px; font-size: 12px;
+      backdrop-filter: blur(6px);
+      display: none;
+    }
+    #extentHint.visible { display: block; }
   </style>
 </head>
 <body>
@@ -198,6 +232,12 @@
     <div class="demLabel">Loading elevation…</div>
   </div>
   <canvas id="overlay"></canvas>
+  <svg id="extentSvg" width="100%" height="100%" aria-hidden="true">
+    <polygon class="outline" id="extentOutline" points=""/>
+    <polygon class="preview" id="extentPreview" points="" style="display:none;"/>
+  </svg>
+  <div id="extentDrawLayer" aria-hidden="true"></div>
+  <div id="extentHint">Drag to draw the simulation extent &middot; press Esc to cancel</div>
   <div id="paintLayer" aria-hidden="true"></div>
   <button id="curveBtnFloating" title="Rain curve editor" aria-label="Rain curve editor">&#x2f0f;</button>
   <button id="brushBtnFloating" title="Brush rain" aria-label="Brush rain">Brush</button>
@@ -244,8 +284,8 @@
   <div id="hud">
     <div class="hdr">
       <div class="title">
-        <div class="name">CA water runoff <span style="font-weight:400;font-size:11px;color:#9aa0a6;">GPU</span></div>
-        <div class="sub">height + water &bull; WebGL2</div>
+        <div class="name">CA water runoff <span style="font-weight:400;font-size:11px;color:#9aa0a6;">v7 - drawn extent</span></div>
+        <div class="sub">draw bounds &bull; sim is geo-anchored</div>
       </div>
       <button class="collapseBtn" id="hudToggle" title="Collapse/expand controls" aria-label="Collapse/expand controls">&equiv;</button>
     </div>
@@ -263,8 +303,8 @@
       </div>
       <div class="row">
         <label>Flow</label>
-        <input type="range" id="flow" min="0" max="1" step="0.01" value="0.81">
-        <div class="val" id="flow-val">0.81</div>
+        <input type="range" id="flow" min="0" max="1" step="0.01" value="0.4">
+        <div class="val" id="flow-val">0.40</div>
       </div>
       <div class="row">
         <label>Rain</label>
@@ -326,9 +366,13 @@
         <button id="reset">Reset water</button>
         <button id="reloadDem">Reload DEM</button>
       </div>
+      <div class="btns" style="margin-top:6px;">
+        <button id="redrawExtent">Redraw extent</button>
+        <button id="clearExtent">Reset extent</button>
+      </div>
       <div class="hint">
-        GPU CA water runoff with flow accumulation layer. Channel boost uses D8 drainage network to accelerate flow in natural river paths.
-        Pan and zoom remap the sim to the view; Reload DEM fetches Terrarium for the current view and resets water.
+        The CA simulation runs inside a fixed geographic extent. Pan/zoom freely &mdash; the sim stays anchored.
+        <b>Redraw extent</b> lets you drag a new bounding box. <b>Reset extent</b> snaps it back to the current viewport with margins.
         <span style="display:inline-block;margin-left:6px;">
           <a href="./map_v4_ca_water_readme.html" target="_blank" rel="noopener" style="color:#8ab4f8;text-decoration:none;">README</a>
         </span>
@@ -401,7 +445,6 @@
     const tileCache = new Map();
     const PURGE_MARGIN = 3;
     let demLoadGen = 0;
-    const DEM_VIEW_MARGIN_PX = 64;
 
     function lonToTileX(lon, z) { return Math.floor((lon + 180) / 360 * (1 << z)); }
     function latToTileY(lat, z) {
@@ -438,15 +481,16 @@
         if (sx < txMin - M || sx > txMax + M || sy < tyMin - M || sy > tyMax + M) tileCache.delete(key);
       }
     }
-    async function loadDemAtCenter() {
+    async function loadDemForExtent(extent) {
+      if (!extent) return;
       beginDemLoading();
       try {
         setErr('');
         const gen = ++demLoadGen;
-        const bounds = map.getBounds();
-        const nw = bounds.getNorthWest(), se = bounds.getSouthEast();
-        const txMin = lonToTileX(nw.lng, DEM_Z), txMax = lonToTileX(se.lng, DEM_Z);
-        const tyMin = latToTileY(nw.lat, DEM_Z), tyMax = latToTileY(se.lat, DEM_Z);
+        const txMin = lonToTileX(extent.lngMin, DEM_Z);
+        const txMax = lonToTileX(extent.lngMax, DEM_Z);
+        const tyMin = latToTileY(extent.latMax, DEM_Z); // north → low tile y
+        const tyMax = latToTileY(extent.latMin, DEM_Z); // south → high tile y
         const ox = txMin - 1, oy = tyMin - 1;
         const mw = (txMax - txMin) + 3, mh = (tyMax - tyMin) + 3;
         const jobs = [];
@@ -490,25 +534,37 @@
       return { u: dx / w, v: dy / h, inside: dx >= 0 && dy >= 0 && dx < w && dy < h };
     }
 
-    function demCoversViewport() {
-      if (!demHeights) return false;
-      const r = overlayCanvas.getBoundingClientRect();
-      const m = DEM_VIEW_MARGIN_PX;
-      const w = Math.max(1, r.width);
-      const h = Math.max(1, r.height);
-      const x0 = Math.max(0, m), y0 = Math.max(0, m);
-      const x1 = Math.max(x0, w - m), y1 = Math.max(y0, h - m);
+    // -------- Simulation extent (geographic bounding box) --------
+    // The CA simulation is anchored to a fixed lat/lng rectangle. Pan/zoom doesn't
+    // remap it; only Redraw/Reset/Reload triggers a rebuild.
+    let simExtent = null; // { lngMin, latMin, lngMax, latMax }
 
-      // Corners-only checks miss failures under rotation/pitch; sample a small grid.
-      const xs = [x0, 0.5 * (x0 + x1), x1];
-      const ys = [y0, 0.5 * (y0 + y1), y1];
-      for (let j = 0; j < ys.length; j++) {
-        for (let i = 0; i < xs.length; i++) {
-          const uv = demUvFromScreenPx(xs[i], ys[j]);
-          if (!uv.inside) return false;
-        }
-      }
-      return true;
+    function getViewportDefaultExtent(marginPct = 0.12) {
+      const b = map.getBounds();
+      const w = b.getWest(), e = b.getEast();
+      const s = b.getSouth(), n = b.getNorth();
+      const dx = e - w, dy = n - s;
+      return {
+        lngMin: w + dx * marginPct,
+        lngMax: e - dx * marginPct,
+        latMin: s + dy * marginPct,
+        latMax: n - dy * marginPct,
+      };
+    }
+
+    function extentLngLatToUv(lng, lat) {
+      // u along lng (0=west,1=east), v along lat (0=south,1=north)
+      // Tex row 0 = bottom of screen = south; matches v_uv.y mapping in shader.
+      if (!simExtent) return { u: -1, v: -1, inside: false };
+      const u = (lng - simExtent.lngMin) / (simExtent.lngMax - simExtent.lngMin);
+      const v = (lat - simExtent.latMin) / (simExtent.latMax - simExtent.latMin);
+      return { u, v, inside: u >= 0 && u <= 1 && v >= 0 && v <= 1 };
+    }
+
+    function extentUvToLngLat(u, v) {
+      const lng = simExtent.lngMin + u * (simExtent.lngMax - simExtent.lngMin);
+      const lat = simExtent.latMin + v * (simExtent.latMax - simExtent.latMin);
+      return { lng, lat };
     }
 
     // -------- D8 Flow Accumulation --------
@@ -669,15 +725,9 @@
     // -------- Params --------
     let N = 512;
     let mappingDirty = true;
-    let mappingPending = true;
-    let mapInteracting = false;
-    let mapSettleTimer = null;
-    const MAP_SETTLE_MS = 120;
-    let lastTerrainRemapMs = 0;
-    const INTERACT_REMAP_MS = 36;
     const params = {
       run: true,
-      flow: 0.81,
+      flow: 0.4,
       rain: 1.76,
       rainAmp: 8.73,
       rainPeriod: 2324,
@@ -946,13 +996,28 @@
       return linkProgram(vs, fs);
     }
 
-    // Full-screen-quad vertex shader (shared by all programs)
+    // Full-screen-quad vertex shader (used by the CA step which always writes the
+    // entire gpuN x gpuN water texture).
     const QUAD_VS = `#version 300 es
       in vec2 a_pos;
       out vec2 v_uv;
       void main() {
         v_uv = a_pos * 0.5 + 0.5;
         gl_Position = vec4(a_pos, 0.0, 1.0);
+      }
+    `;
+
+    // Render vertex shader: maps the 4 quad corners to the projected extent on
+    // screen (NDC) so the water/DEM textures appear inside the geographic extent.
+    // Buffer order is BL, BR, TL, TR (matches QUAD_VS buffer below).
+    const RENDER_VS = `#version 300 es
+      in vec2 a_pos;
+      uniform vec2 u_corners[4]; // NDC: BL, BR, TL, TR
+      out vec2 v_uv;
+      void main() {
+        v_uv = a_pos * 0.5 + 0.5;
+        int idx = (a_pos.x > 0.0 ? 1 : 0) + (a_pos.y > 0.0 ? 2 : 0);
+        gl_Position = vec4(u_corners[idx], 0.0, 1.0);
       }
     `;
 
@@ -1001,7 +1066,8 @@
         // For each neighbor, transfer is bounded by the giving cell's available
         // water, so we never drain a cell below zero (which would otherwise be
         // silently absorbed by the clamp and break mass conservation).
-        float spreadRate = 0.12 * flow;
+        // Rate is kept <0.5 (stable CFL-like bound for explicit diffusion).
+        float spreadRate = 0.25 * flow;
         float newW = wHere;
         for (int i = 0; i < 8; i++) {
           vec2 nuv = v_uv + vec2(float(d8[i].x), float(d8[i].y)) * u_texelSize;
@@ -1048,8 +1114,19 @@
           }
         }
 
+        // Interior pit drain: a cell with no D8 direction is a flat/sink that
+        // priority-flood could not route. These cells receive water from uphill
+        // neighbors (Pass B) but have no advective outflow, so without an extra
+        // decay they grow unboundedly and eventually blow up the simulation at
+        // certain grid sizes / DEM alignments.
+        if (myDir == 0) {
+          newW *= 0.92;
+        }
+
         newW *= max(0.0, 1.0 - u_evap);
-        outW = max(0.0, newW);
+        // Hard cap: keeps a single runaway cell from producing Inf/NaN and
+        // propagating into the whole texture through neighborhood sampling.
+        outW = clamp(newW, 0.0, 1.0e5);
       }
     `;
 
@@ -1140,7 +1217,7 @@
     `;
 
     const caProg = makeProgram(QUAD_VS, CA_FS);
-    const renderProg = makeProgram(QUAD_VS, RENDER_FS);
+    const renderProg = makeProgram(RENDER_VS, RENDER_FS);
 
     // Fullscreen quad VAO
     const quadBuf = gl.createBuffer();
@@ -1216,22 +1293,26 @@
       tick = 0;
     }
 
-    // Upload H and valid from CPU-side DEM sampling
+    // Upload H and valid from CPU-side DEM sampling, anchored to the geographic extent.
     function rebuildGpuTerrain() {
-      if (!demHeights) return;
-      const rect = overlayCanvas.getBoundingClientRect();
-      const cw = rect.width, ch = rect.height;
+      if (!demHeights || !simExtent) return;
       const hData = new Float32Array(gpuN * gpuN);
       const vData = new Uint8Array(gpuN * gpuN);
+      const dw = demCanvas.width, dh = demCanvas.height;
       for (let y = 0; y < gpuN; y++) {
-        const sy = ((gpuN - 1 - y) / (gpuN - 1)) * ch; // flip Y: tex row 0 = screen bottom
+        // Tex row 0 = south (latMin), row gpuN-1 = north (latMax)
+        const v = y / (gpuN - 1);
+        const lat = simExtent.latMin + v * (simExtent.latMax - simExtent.latMin);
         for (let x = 0; x < gpuN; x++) {
-          const sx = (x / (gpuN - 1)) * cw;
-          const uv = demUvFromScreenPx(sx, sy);
+          const u = x / (gpuN - 1);
+          const lng = simExtent.lngMin + u * (simExtent.lngMax - simExtent.lngMin);
+          const wp = worldPxFromLngLat(lng, lat, DEM_Z);
+          const dx = wp.x - demOriginWorldPx.x;
+          const dy = wp.y - demOriginWorldPx.y;
           const k = y * gpuN + x;
-          if (uv.inside) {
+          if (dx >= 0 && dy >= 0 && dx < dw && dy < dh) {
             vData[k] = 255;
-            hData[k] = sampleDemHeightUV(uv.u, uv.v);
+            hData[k] = sampleDemHeightUV(dx / dw, dy / dh);
           }
         }
       }
@@ -1289,12 +1370,15 @@
       brushDirty = true;
     }
     function paintAtCssPx(sx, sy) {
-      if (!brushData) return;
+      if (!brushData || !simExtent) return;
+      // CSS px → lng/lat via map → extent UV → grid coord. This means the brush
+      // hits the right cells regardless of pan/zoom/rotate.
       const rect = overlayCanvas.getBoundingClientRect();
-      const cw = rect.width, ch = rect.height;
-      if (cw <= 0 || ch <= 0) return;
-      const fx = (sx / cw) * (gpuN - 1);
-      const fy = ((ch - sy) / ch) * (gpuN - 1); // flip Y: screen top→texture bottom
+      const ll = map.unproject([sx - rect.left, sy - rect.top]);
+      const uv = extentLngLatToUv(ll.lng, ll.lat);
+      if (!uv.inside) return;
+      const fx = uv.u * (gpuN - 1);
+      const fy = uv.v * (gpuN - 1);
       const cx = Math.round(fx), cy = Math.round(fy);
       const R = Math.max(1, Math.min(60, params.brushSize | 0));
       const add = Math.max(0, params.brushAmt) * 0.02;
@@ -1352,13 +1436,26 @@
       tick++;
     }
 
+    // Project an extent corner (lng, lat) to NDC for the overlay canvas.
+    function lngLatToNdc(lng, lat) {
+      const p = map.project([lng, lat]);
+      const r = overlayCanvas.getBoundingClientRect();
+      const w = Math.max(1, r.width), h = Math.max(1, r.height);
+      const ndcX = (p.x / w) * 2 - 1;
+      const ndcY = 1 - (p.y / h) * 2;
+      return [ndcX, ndcY];
+    }
+
     // Render heatmap (+ optional DEM grayscale) to the overlay canvas
+    // inside the projected extent quad.
     function gpuRender() {
       const w = overlayCanvas.width, h = overlayCanvas.height;
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, w, h);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
+
+      if (!simExtent) return;
 
       gl.useProgram(renderProg);
       gl.bindVertexArray(renderVAO);
@@ -1378,6 +1475,14 @@
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, faTex);
       gl.uniform1i(gl.getUniformLocation(renderProg, 'u_FA'), 3);
+
+      // Order matches a_pos buffer: BL, BR, TL, TR
+      const bl = lngLatToNdc(simExtent.lngMin, simExtent.latMin);
+      const br = lngLatToNdc(simExtent.lngMax, simExtent.latMin);
+      const tl = lngLatToNdc(simExtent.lngMin, simExtent.latMax);
+      const tr = lngLatToNdc(simExtent.lngMax, simExtent.latMax);
+      const corners = new Float32Array([bl[0], bl[1], br[0], br[1], tl[0], tl[1], tr[0], tr[1]]);
+      gl.uniform2fv(gl.getUniformLocation(renderProg, 'u_corners'), corners);
 
       gl.uniform1f(gl.getUniformLocation(renderProg, 'u_opacity'), params.op);
       gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showDem'), showDemLayer ? 1.0 : 0.0);
@@ -1496,28 +1601,132 @@
     bindR('faBoost', 'faBoost-val', v => v.toFixed(1), v => params.faBoost = v);
     bindR('steps', 'steps-val', v => String(v|0), v => params.steps = v|0);
     bindR('op', 'op-val', v => v.toFixed(2), v => params.op = v);
-    document.getElementById('reset').addEventListener('click', () => gpuResetWater());
-    document.getElementById('reloadDem').addEventListener('click', async () => {
+    // -------- Extent UI: outline, drawing, controls --------
+    const extentSvg = document.getElementById('extentSvg');
+    const extentOutlineEl = document.getElementById('extentOutline');
+    const extentPreviewEl = document.getElementById('extentPreview');
+    const extentDrawLayerEl = document.getElementById('extentDrawLayer');
+    const extentHintEl = document.getElementById('extentHint');
+
+    function updateExtentOutline() {
+      if (!extentOutlineEl) return;
+      if (!simExtent) {
+        extentOutlineEl.setAttribute('points', '');
+        return;
+      }
+      const a = map.project([simExtent.lngMin, simExtent.latMin]);
+      const b = map.project([simExtent.lngMax, simExtent.latMin]);
+      const c = map.project([simExtent.lngMax, simExtent.latMax]);
+      const d = map.project([simExtent.lngMin, simExtent.latMax]);
+      extentOutlineEl.setAttribute(
+        'points',
+        `${a.x},${a.y} ${b.x},${b.y} ${c.x},${c.y} ${d.x},${d.y}`
+      );
+    }
+
+    async function applySimExtent(extent) {
+      simExtent = extent;
+      updateExtentOutline();
       try {
-        setErr('');
-        if (mapSettleTimer) {
-          clearTimeout(mapSettleTimer);
-          mapSettleTimer = null;
-        }
-        mapInteracting = false;
-        demLoadGen++; // cancel any in-flight DEM load
+        demLoadGen++;
         demHeights = null;
-        tileCache.clear();
-        await loadDemAtCenter();
+        await loadDemForExtent(simExtent);
         if (!demHeights) return;
         gpuResetWater();
         clearBrush();
         mappingDirty = true;
-        mappingPending = false;
         rebuildGpuTerrain();
       } catch (e) {
         setErr(String(e && e.message ? e.message : e));
       }
+    }
+
+    // Draw mode: temporarily disable map interactions and let user drag a rect.
+    let drawing = false;
+    let drawStart = null; // {x, y} in container CSS px
+    function setDrawingMode(on) {
+      drawing = !!on;
+      if (extentDrawLayerEl) extentDrawLayerEl.classList.toggle('active', drawing);
+      if (extentHintEl) extentHintEl.classList.toggle('visible', drawing);
+      if (extentPreviewEl) extentPreviewEl.style.display = 'none';
+      drawStart = null;
+      if (drawing) {
+        try { map.dragPan.disable(); map.scrollZoom.disable(); map.dragRotate.disable(); map.touchZoomRotate.disable(); map.boxZoom.disable(); map.doubleClickZoom.disable(); } catch {}
+      } else {
+        try { map.dragPan.enable(); map.scrollZoom.enable(); map.dragRotate.enable(); map.touchZoomRotate.enable(); map.boxZoom.enable(); map.doubleClickZoom.enable(); } catch {}
+      }
+    }
+    function pointsRectStr(x0, y0, x1, y1) {
+      return `${x0},${y0} ${x1},${y0} ${x1},${y1} ${x0},${y1}`;
+    }
+    if (extentDrawLayerEl) {
+      extentDrawLayerEl.addEventListener('pointerdown', (e) => {
+        if (!drawing) return;
+        e.preventDefault();
+        try { extentDrawLayerEl.setPointerCapture(e.pointerId); } catch {}
+        drawStart = { x: e.clientX, y: e.clientY };
+        if (extentPreviewEl) {
+          extentPreviewEl.style.display = '';
+          extentPreviewEl.setAttribute('points', pointsRectStr(e.clientX, e.clientY, e.clientX, e.clientY));
+        }
+      }, { passive: false });
+      extentDrawLayerEl.addEventListener('pointermove', (e) => {
+        if (!drawing || !drawStart) return;
+        e.preventDefault();
+        if (extentPreviewEl) {
+          extentPreviewEl.setAttribute('points', pointsRectStr(drawStart.x, drawStart.y, e.clientX, e.clientY));
+        }
+      }, { passive: false });
+      extentDrawLayerEl.addEventListener('pointerup', async (e) => {
+        if (!drawing || !drawStart) { setDrawingMode(false); return; }
+        e.preventDefault();
+        try { extentDrawLayerEl.releasePointerCapture(e.pointerId); } catch {}
+        const x0 = Math.min(drawStart.x, e.clientX);
+        const y0 = Math.min(drawStart.y, e.clientY);
+        const x1 = Math.max(drawStart.x, e.clientX);
+        const y1 = Math.max(drawStart.y, e.clientY);
+        setDrawingMode(false);
+        // Reject tiny drags
+        if ((x1 - x0) < 12 || (y1 - y0) < 12) return;
+        // Convert to lng/lat. Container is fullscreen so client px == map container px.
+        const ll0 = map.unproject([x0, y1]); // SW (bottom-left): minLng, minLat
+        const ll1 = map.unproject([x1, y0]); // NE (top-right): maxLng, maxLat
+        await applySimExtent({
+          lngMin: Math.min(ll0.lng, ll1.lng),
+          lngMax: Math.max(ll0.lng, ll1.lng),
+          latMin: Math.min(ll0.lat, ll1.lat),
+          latMax: Math.max(ll0.lat, ll1.lat),
+        });
+      }, { passive: false });
+    }
+    window.addEventListener('keydown', (e) => {
+      if (drawing && (e.key === 'Escape' || e.key === 'Esc')) setDrawingMode(false);
+    });
+
+    document.getElementById('reset').addEventListener('click', () => gpuResetWater());
+    document.getElementById('reloadDem').addEventListener('click', async () => {
+      try {
+        if (!simExtent) return;
+        setErr('');
+        demLoadGen++;
+        tileCache.clear();
+        demHeights = null;
+        await loadDemForExtent(simExtent);
+        if (!demHeights) return;
+        gpuResetWater();
+        clearBrush();
+        mappingDirty = true;
+        rebuildGpuTerrain();
+      } catch (e) {
+        setErr(String(e && e.message ? e.message : e));
+      }
+    });
+    document.getElementById('redrawExtent').addEventListener('click', () => {
+      try { if (params.brushOn) setBrushEnabled(false); } catch {}
+      setDrawingMode(true);
+    });
+    document.getElementById('clearExtent').addEventListener('click', async () => {
+      await applySimExtent(getViewportDefaultExtent());
     });
 
     // -------- Loop --------
@@ -1529,26 +1738,15 @@
       if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
         overlayCanvas.width = w;
         overlayCanvas.height = h;
-        mappingDirty = true;
       }
     }
 
     function frame() {
       resize();
-      if (demHeights && gpuN > 0) {
-        const now = performance.now();
-        let shouldRemap = mappingDirty;
-        if (mappingPending) {
-          if (!mapInteracting) {
-            shouldRemap = true;
-          } else if (mappingDirty || now - lastTerrainRemapMs >= INTERACT_REMAP_MS) {
-            shouldRemap = true;
-          }
-        }
-        if (shouldRemap) {
+      if (demHeights && gpuN > 0 && simExtent) {
+        if (mappingDirty) {
           rebuildGpuTerrain();
-          lastTerrainRemapMs = now;
-          if (!mapInteracting) mappingPending = false;
+          mappingDirty = false;
         }
         if (params.run) {
           uploadBrush();
@@ -1557,6 +1755,12 @@
         }
         updateRainMeter();
         gpuRender();
+      } else {
+        // Even without sim, ensure overlay canvas is cleared and outline is fresh.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, overlayCanvas.width, overlayCanvas.height);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
       }
       requestAnimationFrame(frame);
     }
@@ -1565,53 +1769,17 @@
       try {
         gpuAlloc(N);
         clearBrush();
-        await loadDemAtCenter();
-        mappingDirty = true;
-        mappingPending = true;
+        await applySimExtent(getViewportDefaultExtent());
 
-        const onInteractStart = () => {
-          mapInteracting = true;
-          lastTerrainRemapMs = 0;
-          if (mapSettleTimer) {
-            clearTimeout(mapSettleTimer);
-            mapSettleTimer = null;
-          }
-        };
-        const onInteractMove = () => { mappingPending = true; };
-        const scheduleMapSettled = () => {
-          if (mapSettleTimer) clearTimeout(mapSettleTimer);
-          mapSettleTimer = setTimeout(() => {
-            mapSettleTimer = null;
-            (async () => {
-              mapInteracting = false;
-              // If the viewport has moved outside the DEM mosaic, reload DEM at the new view.
-              if (!demCoversViewport()) {
-                try {
-                  await loadDemAtCenter();
-                  mappingDirty = true;
-                } catch (e) {
-                  setErr(String(e && e.message ? e.message : e));
-                }
-              }
-              mappingPending = true;
-            })();
-          }, MAP_SETTLE_MS);
-        };
-
-        map.on('movestart', onInteractStart);
-        map.on('zoomstart', onInteractStart);
-        map.on('rotatestart', onInteractStart);
-        map.on('pitchstart', onInteractStart);
-
-        map.on('move', onInteractMove);
-        map.on('zoom', onInteractMove);
-        map.on('rotate', onInteractMove);
-        map.on('pitch', onInteractMove);
-
-        map.on('moveend', scheduleMapSettled);
-        map.on('zoomend', scheduleMapSettled);
-        map.on('rotateend', scheduleMapSettled);
-        map.on('pitchend', scheduleMapSettled);
+        // Pan/zoom doesn't remap the sim — only the on-screen outline + render quad
+        // need to follow the map. Both happen each frame via updateExtentOutline()
+        // and gpuRender() reading map.project of extent corners.
+        const onMapMove = () => updateExtentOutline();
+        map.on('move', onMapMove);
+        map.on('zoom', onMapMove);
+        map.on('rotate', onMapMove);
+        map.on('pitch', onMapMove);
+        map.on('resize', onMapMove);
         frame();
       } catch (e) {
         setErr(String(e && e.message ? e.message : e));
