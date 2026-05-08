@@ -350,13 +350,13 @@
       </div>
       <div class="row">
         <label>Rain</label>
-        <input type="range" id="rain" min="0" max="2" step="0.01" value="1.76">
-        <div class="val" id="rain-val">1.76</div>
+        <input type="range" id="rain" min="0" max="2" step="0.01" value="0.80">
+        <div class="val" id="rain-val">0.80</div>
       </div>
       <div class="row">
         <label>Rain amp</label>
-        <input type="range" id="rainAmp" min="0" max="10" step="0.01" value="8.73">
-        <div class="val" id="rainAmp-val">8.73</div>
+        <input type="range" id="rainAmp" min="0" max="10" step="0.01" value="1.50">
+        <div class="val" id="rainAmp-val">1.50</div>
       </div>
       <div class="row">
         <label>Rain period</label>
@@ -370,8 +370,8 @@
       </div>
       <div class="row">
         <label>Advect (D8)</label>
-        <input type="range" id="faBoost" min="0" max="40" step="0.1" value="30">
-        <div class="val" id="faBoost-val">30.0</div>
+        <input type="range" id="faBoost" min="0" max="40" step="0.1" value="12">
+        <div class="val" id="faBoost-val">12.0</div>
       </div>
       <div class="row">
         <label>Steps/frame</label>
@@ -393,18 +393,18 @@
       </div>
       <div class="row">
         <label>Capacity</label>
-        <input type="range" id="eroCap" min="0" max="0.4" step="0.001" value="0.07">
-        <div class="val" id="eroCap-val">0.070</div>
+        <input type="range" id="eroCap" min="0" max="0.4" step="0.001" value="0.03">
+        <div class="val" id="eroCap-val">0.030</div>
       </div>
       <div class="row">
         <label>Erode rate</label>
-        <input type="range" id="eroRate" min="0" max="1" step="0.005" value="0.55">
-        <div class="val" id="eroRate-val">0.550</div>
+        <input type="range" id="eroRate" min="0" max="1" step="0.005" value="0.20">
+        <div class="val" id="eroRate-val">0.200</div>
       </div>
       <div class="row">
         <label>Deposit rate</label>
-        <input type="range" id="depRate" min="0" max="1" step="0.005" value="0.30">
-        <div class="val" id="depRate-val">0.300</div>
+        <input type="range" id="depRate" min="0" max="1" step="0.005" value="0.15">
+        <div class="val" id="depRate-val">0.150</div>
       </div>
       <div class="row">
         <label>Sed advect</label>
@@ -413,8 +413,8 @@
       </div>
       <div class="row">
         <label>Max erode (m)</label>
-        <input type="range" id="maxErode" min="5" max="600" step="5" value="180">
-        <div class="val" id="maxErode-val">180</div>
+        <input type="range" id="maxErode" min="5" max="600" step="5" value="60">
+        <div class="val" id="maxErode-val">60</div>
       </div>
 
       <div class="layers">
@@ -656,158 +656,202 @@
       return { lng, lat };
     }
 
-    // -------- D8 Flow Accumulation --------
-    // Priority-flood sink fill, D8 flow direction, and upstream accumulation.
-    // Returns { fa: Float32Array (log-normalized 0..1), dir: Float32Array (1-8 direction, 0=none) }
-    function computeFlowAccumulation(hData, vData, n) {
-      const size = n * n;
+    // -------- D8 Flow Accumulation (Web Worker) --------
+    // The heavy computation (priority-flood, D8 direction, accumulation BFS)
+    // runs in a Web Worker so the main thread never blocks. Results are posted
+    // back as transferable Float32Arrays and uploaded to GPU textures.
 
-      // 1. Priority-flood sink fill: remove spurious pits so every cell drains
-      const filled = new Float32Array(hData);
-      const INF = 1e30;
-      const visited = new Uint8Array(size);
-      // Min-heap (priority queue) entries: [height, index]
-      // Simple binary heap implementation for performance
-      const heap = [];
-      function heapPush(h, idx) {
-        heap.push([h, idx]);
-        let i = heap.length - 1;
-        while (i > 0) {
-          const parent = (i - 1) >> 1;
-          if (heap[parent][0] <= heap[i][0]) break;
-          [heap[parent], heap[i]] = [heap[i], heap[parent]];
-          i = parent;
+    const faWorkerSrc = `
+      self.onmessage = function(e) {
+        const { hBuf, vBuf, n } = e.data;
+        const hData = new Float32Array(hBuf);
+        const vData = new Uint8Array(vBuf);
+        const size = n * n;
+
+        // 1. Priority-flood sink fill
+        const filled = new Float32Array(hData);
+        const visited = new Uint8Array(size);
+        const heap = [];
+        function heapPush(h, idx) {
+          heap.push(h, idx);
+          let i = (heap.length >> 1) - 1;
+          while (i > 0) {
+            const p = ((i - 1) >> 1);
+            if (heap[p * 2] <= heap[i * 2]) break;
+            const th = heap[p*2], ti = heap[p*2+1];
+            heap[p*2] = heap[i*2]; heap[p*2+1] = heap[i*2+1];
+            heap[i*2] = th; heap[i*2+1] = ti;
+            i = p;
+          }
         }
-      }
-      function heapPop() {
-        const top = heap[0];
-        const last = heap.pop();
-        if (heap.length > 0) {
-          heap[0] = last;
+        function heapPop() {
+          const h0 = heap[0], i0 = heap[1];
+          const len = heap.length >> 1;
+          if (len <= 1) { heap.length = 0; return [h0, i0]; }
+          heap[0] = heap[heap.length - 2];
+          heap[1] = heap[heap.length - 1];
+          heap.length -= 2;
           let i = 0;
+          const hl = heap.length >> 1;
           while (true) {
-            let smallest = i;
-            const l = 2 * i + 1, r = 2 * i + 2;
-            if (l < heap.length && heap[l][0] < heap[smallest][0]) smallest = l;
-            if (r < heap.length && heap[r][0] < heap[smallest][0]) smallest = r;
-            if (smallest === i) break;
-            [heap[smallest], heap[i]] = [heap[i], heap[smallest]];
-            i = smallest;
+            let s = i, l = 2*i+1, r = 2*i+2;
+            if (l < hl && heap[l*2] < heap[s*2]) s = l;
+            if (r < hl && heap[r*2] < heap[s*2]) s = r;
+            if (s === i) break;
+            const th = heap[s*2], ti = heap[s*2+1];
+            heap[s*2] = heap[i*2]; heap[s*2+1] = heap[i*2+1];
+            heap[i*2] = th; heap[i*2+1] = ti;
+            i = s;
           }
+          return [h0, i0];
         }
-        return top;
-      }
 
-      // Seed boundary/edge cells into the priority queue
-      for (let y = 0; y < n; y++) {
-        for (let x = 0; x < n; x++) {
-          const k = y * n + x;
-          if (vData[k] < 128) { visited[k] = 1; continue; }
-          if (x === 0 || x === n - 1 || y === 0 || y === n - 1 ||
-              (x > 0 && vData[k - 1] < 128) || (x < n - 1 && vData[k + 1] < 128) ||
-              (y > 0 && vData[k - n] < 128) || (y < n - 1 && vData[k + n] < 128)) {
-            heapPush(filled[k], k);
-            visited[k] = 1;
-          }
-        }
-      }
-
-      const dx8 = [-1, 0, 1, -1, 1, -1, 0, 1];
-      const dy8 = [-1, -1, -1, 0, 0, 1, 1, 1];
-
-      while (heap.length > 0) {
-        const [h, idx] = heapPop();
-        const cx = idx % n, cy = (idx / n) | 0;
-        for (let d = 0; d < 8; d++) {
-          const nx = cx + dx8[d], ny = cy + dy8[d];
-          if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
-          const nk = ny * n + nx;
-          if (visited[nk]) continue;
-          visited[nk] = 1;
-          filled[nk] = Math.max(filled[nk], h + 1e-5);
-          heapPush(filled[nk], nk);
-        }
-      }
-
-      // 2. D8 flow direction: each cell points to steepest downhill neighbor
-      const flowDir = new Int8Array(size).fill(-1);
-      const dist8 = [Math.SQRT2, 1, Math.SQRT2, 1, 1, Math.SQRT2, 1, Math.SQRT2];
-
-      for (let y = 0; y < n; y++) {
-        for (let x = 0; x < n; x++) {
-          const k = y * n + x;
-          if (vData[k] < 128) continue;
-          let bestSlope = 0, bestDir = -1;
-          const hc = filled[k];
-          for (let d = 0; d < 8; d++) {
-            const nx = x + dx8[d], ny = y + dy8[d];
-            if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
-            const nk = ny * n + nx;
-            if (vData[nk] < 128) continue;
-            const slope = (hc - filled[nk]) / dist8[d];
-            if (slope > bestSlope) {
-              bestSlope = slope;
-              bestDir = d;
+        for (let y = 0; y < n; y++) {
+          for (let x = 0; x < n; x++) {
+            const k = y * n + x;
+            if (vData[k] < 128) { visited[k] = 1; continue; }
+            if (x === 0 || x === n-1 || y === 0 || y === n-1 ||
+                (x > 0 && vData[k-1] < 128) || (x < n-1 && vData[k+1] < 128) ||
+                (y > 0 && vData[k-n] < 128) || (y < n-1 && vData[k+n] < 128)) {
+              heapPush(filled[k], k);
+              visited[k] = 1;
             }
           }
-          flowDir[k] = bestDir;
         }
-      }
 
-      // 3. Accumulation: topological sort (upstream first), then propagate downstream
-      // Count in-degree (how many cells flow INTO each cell)
-      const inDeg = new Int32Array(size);
-      for (let k = 0; k < size; k++) {
-        if (flowDir[k] < 0) continue;
-        const x = k % n, y = (k / n) | 0;
-        const d = flowDir[k];
-        const nx = x + dx8[d], ny = y + dy8[d];
-        if (nx >= 0 && nx < n && ny >= 0 && ny < n) {
-          inDeg[ny * n + nx]++;
+        const dx8 = [-1, 0, 1, -1, 1, -1, 0, 1];
+        const dy8 = [-1, -1, -1, 0, 0, 1, 1, 1];
+
+        while (heap.length > 0) {
+          const [h, idx] = heapPop();
+          const cx = idx % n, cy = (idx / n) | 0;
+          for (let d = 0; d < 8; d++) {
+            const nx2 = cx + dx8[d], ny2 = cy + dy8[d];
+            if (nx2 < 0 || nx2 >= n || ny2 < 0 || ny2 >= n) continue;
+            const nk = ny2 * n + nx2;
+            if (visited[nk]) continue;
+            visited[nk] = 1;
+            filled[nk] = Math.max(filled[nk], h + 1e-5);
+            heapPush(filled[nk], nk);
+          }
         }
-      }
 
-      // BFS from sources (in-degree 0, valid cells)
-      const acc = new Float32Array(size).fill(1);
-      const queue = [];
-      for (let k = 0; k < size; k++) {
-        if (vData[k] >= 128 && inDeg[k] === 0) queue.push(k);
-      }
+        // 2. D8 flow direction
+        const SQRT2 = 1.41421356;
+        const dist8 = [SQRT2, 1, SQRT2, 1, 1, SQRT2, 1, SQRT2];
+        const flowDir = new Int8Array(size).fill(-1);
+        for (let y = 0; y < n; y++) {
+          for (let x = 0; x < n; x++) {
+            const k = y * n + x;
+            if (vData[k] < 128) continue;
+            let bestSlope = 0, bestDir = -1;
+            const hc = filled[k];
+            for (let d = 0; d < 8; d++) {
+              const nx2 = x + dx8[d], ny2 = y + dy8[d];
+              if (nx2 < 0 || nx2 >= n || ny2 < 0 || ny2 >= n) continue;
+              const nk = ny2 * n + nx2;
+              if (vData[nk] < 128) continue;
+              const slope = (hc - filled[nk]) / dist8[d];
+              if (slope > bestSlope) { bestSlope = slope; bestDir = d; }
+            }
+            flowDir[k] = bestDir;
+          }
+        }
 
-      let qi = 0;
-      while (qi < queue.length) {
-        const k = queue[qi++];
-        if (flowDir[k] < 0) continue;
-        const x = k % n, y = (k / n) | 0;
-        const d = flowDir[k];
-        const nx = x + dx8[d], ny = y + dy8[d];
-        if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue;
-        const nk = ny * n + nx;
-        acc[nk] += acc[k];
-        inDeg[nk]--;
-        if (inDeg[nk] === 0) queue.push(nk);
-      }
-
-      // 4. Log-normalize accumulation to 0..1
-      let maxAcc = 1;
-      for (let k = 0; k < size; k++) {
-        if (vData[k] >= 128 && acc[k] > maxAcc) maxAcc = acc[k];
-      }
-      const logMax = Math.log2(maxAcc);
-      const faData = new Float32Array(size);
-      if (logMax > 0) {
+        // 3. Accumulation BFS
+        const inDeg = new Int32Array(size);
         for (let k = 0; k < size; k++) {
-          if (vData[k] < 128) continue;
-          faData[k] = Math.log2(acc[k]) / logMax;
+          if (flowDir[k] < 0) continue;
+          const x = k % n, y = (k / n) | 0;
+          const d = flowDir[k];
+          const nx2 = x + dx8[d], ny2 = y + dy8[d];
+          if (nx2 >= 0 && nx2 < n && ny2 >= 0 && ny2 < n) inDeg[ny2 * n + nx2]++;
         }
-      }
+        const acc = new Float32Array(size).fill(1);
+        const queue = [];
+        for (let k = 0; k < size; k++) {
+          if (vData[k] >= 128 && inDeg[k] === 0) queue.push(k);
+        }
+        let qi = 0;
+        while (qi < queue.length) {
+          const k = queue[qi++];
+          if (flowDir[k] < 0) continue;
+          const x = k % n, y = (k / n) | 0;
+          const d = flowDir[k];
+          const nx2 = x + dx8[d], ny2 = y + dy8[d];
+          if (nx2 < 0 || nx2 >= n || ny2 < 0 || ny2 >= n) continue;
+          const nk = ny2 * n + nx2;
+          acc[nk] += acc[k];
+          inDeg[nk]--;
+          if (inDeg[nk] === 0) queue.push(nk);
+        }
 
-      // 5. Direction texture: encode D8 direction as 1-8 (0 = no direction)
-      const dirData = new Float32Array(size);
-      for (let k = 0; k < size; k++) {
-        dirData[k] = flowDir[k] >= 0 ? flowDir[k] + 1.0 : 0.0;
-      }
+        // 4. Log-normalize
+        let maxAcc = 1;
+        for (let k = 0; k < size; k++) {
+          if (vData[k] >= 128 && acc[k] > maxAcc) maxAcc = acc[k];
+        }
+        const logMax = Math.log2(maxAcc);
+        const faData = new Float32Array(size);
+        if (logMax > 0) {
+          for (let k = 0; k < size; k++) {
+            if (vData[k] < 128) continue;
+            faData[k] = Math.log2(acc[k]) / logMax;
+          }
+        }
 
+        // 5. Direction texture
+        const dirData = new Float32Array(size);
+        for (let k = 0; k < size; k++) {
+          dirData[k] = flowDir[k] >= 0 ? flowDir[k] + 1.0 : 0.0;
+        }
+
+        self.postMessage({ faBuf: faData.buffer, dirBuf: dirData.buffer },
+                         [faData.buffer, dirData.buffer]);
+      };
+    `;
+
+    const faWorkerBlob = new Blob([faWorkerSrc], { type: 'application/javascript' });
+    const faWorkerUrl = URL.createObjectURL(faWorkerBlob);
+    let faWorker = null;
+    let faWorkerBusy = false;
+
+    function ensureFaWorker() {
+      if (faWorker) return;
+      faWorker = new Worker(faWorkerUrl);
+      faWorker.onmessage = (e) => {
+        faWorkerBusy = false;
+        const faData = new Float32Array(e.data.faBuf);
+        const dirData = new Float32Array(e.data.dirBuf);
+        gl.bindTexture(gl.TEXTURE_2D, faTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, faData);
+        gl.bindTexture(gl.TEXTURE_2D, dirTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, dirData);
+        lastFaAutoTime = performance.now();
+      };
+    }
+
+    // Synchronous fallback for initial load (before first frame)
+    function computeFlowAccumulationSync(hData, vData, n) {
+      const size = n * n;
+      const filled = new Float32Array(hData);
+      const visited = new Uint8Array(size);
+      const heap = [];
+      function heapPush(h, idx) { heap.push([h, idx]); let i = heap.length - 1; while (i > 0) { const p = (i-1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } }
+      function heapPop() { const top = heap[0]; const last = heap.pop(); if (heap.length > 0) { heap[0] = last; let i = 0; while (true) { let s = i, l = 2*i+1, r = 2*i+2; if (l < heap.length && heap[l][0] < heap[s][0]) s = l; if (r < heap.length && heap[r][0] < heap[s][0]) s = r; if (s === i) break; [heap[s], heap[i]] = [heap[i], heap[s]]; i = s; } } return top; }
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const k = y*n+x; if (vData[k] < 128) { visited[k] = 1; continue; } if (x === 0 || x === n-1 || y === 0 || y === n-1 || (x > 0 && vData[k-1] < 128) || (x < n-1 && vData[k+1] < 128) || (y > 0 && vData[k-n] < 128) || (y < n-1 && vData[k+n] < 128)) { heapPush(filled[k], k); visited[k] = 1; } }
+      const dx8 = [-1,0,1,-1,1,-1,0,1], dy8 = [-1,-1,-1,0,0,1,1,1];
+      while (heap.length > 0) { const [h, idx] = heapPop(); const cx = idx % n, cy = (idx/n)|0; for (let d = 0; d < 8; d++) { const nx = cx+dx8[d], ny = cy+dy8[d]; if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue; const nk = ny*n+nx; if (visited[nk]) continue; visited[nk] = 1; filled[nk] = Math.max(filled[nk], h+1e-5); heapPush(filled[nk], nk); } }
+      const dist8 = [Math.SQRT2,1,Math.SQRT2,1,1,Math.SQRT2,1,Math.SQRT2];
+      const flowDir = new Int8Array(size).fill(-1);
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const k = y*n+x; if (vData[k] < 128) continue; let bs = 0, bd = -1; const hc = filled[k]; for (let d = 0; d < 8; d++) { const nx = x+dx8[d], ny = y+dy8[d]; if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue; const nk = ny*n+nx; if (vData[nk] < 128) continue; const s = (hc-filled[nk])/dist8[d]; if (s > bs) { bs = s; bd = d; } } flowDir[k] = bd; }
+      const inDeg = new Int32Array(size); for (let k = 0; k < size; k++) { if (flowDir[k] < 0) continue; const x = k%n, y = (k/n)|0, d = flowDir[k], nx = x+dx8[d], ny = y+dy8[d]; if (nx >= 0 && nx < n && ny >= 0 && ny < n) inDeg[ny*n+nx]++; }
+      const acc = new Float32Array(size).fill(1); const queue = []; for (let k = 0; k < size; k++) if (vData[k] >= 128 && inDeg[k] === 0) queue.push(k);
+      let qi = 0; while (qi < queue.length) { const k = queue[qi++]; if (flowDir[k] < 0) continue; const x = k%n, y = (k/n)|0, d = flowDir[k], nx = x+dx8[d], ny = y+dy8[d]; if (nx < 0 || nx >= n || ny < 0 || ny >= n) continue; const nk = ny*n+nx; acc[nk] += acc[k]; inDeg[nk]--; if (inDeg[nk] === 0) queue.push(nk); }
+      let maxAcc = 1; for (let k = 0; k < size; k++) if (vData[k] >= 128 && acc[k] > maxAcc) maxAcc = acc[k];
+      const logMax = Math.log2(maxAcc); const faData = new Float32Array(size);
+      if (logMax > 0) for (let k = 0; k < size; k++) { if (vData[k] < 128) continue; faData[k] = Math.log2(acc[k]) / logMax; }
+      const dirData = new Float32Array(size); for (let k = 0; k < size; k++) dirData[k] = flowDir[k] >= 0 ? flowDir[k] + 1.0 : 0.0;
       return { fa: faData, dir: dirData };
     }
 
@@ -819,10 +863,10 @@
       run: true,
       flow: 0.4,
       rain: 0.80,
-      rainAmp: 8.73,
+      rainAmp: 1.50,
       rainPeriod: 2324,
       evap: 0.008,
-      faBoost: 30.0,
+      faBoost: 12.0,
       steps: 1,
       op: 0.74,
       // brushMode: 'off' | 'water' | 'raise' | 'lower' | 'blur'
@@ -833,15 +877,15 @@
       // -------- Erosion --------
       erodeOn: true,
       // Capacity factor: how much sediment a unit of (slope * water) can carry.
-      eroCapacity: 0.07,
+      eroCapacity: 0.03,
       // Erosion rate: fraction of (capacity - sediment) actually cut from bedrock per step.
-      eroRate: 0.55,
+      eroRate: 0.20,
       // Deposition rate: fraction of (sediment - capacity) dropped per step.
-      depRate: 0.30,
+      depRate: 0.15,
       // Sediment D8 advection rate (mass-conservative; scaled by local water).
       sedAdvect: 0.55,
       // Hard floor on how far erosion can dig below the original DEM (m).
-      maxErode: 180
+      maxErode: 60
     };
     let tick = 0;
 
@@ -856,11 +900,11 @@
     let vData = null;
     let faPendingRecompute = false;
     let lastDemEditTime = 0;
-    const FA_RECOMPUTE_DEBOUNCE_MS = 260;
+    const FA_RECOMPUTE_DEBOUNCE_MS = 120;
     // Periodic FA recompute while erosion runs (so D8 routing tracks the
     // shifting drainage network without forcing user input). Runs at most once
     // per N ms.
-    const FA_AUTO_RECOMPUTE_MS = 4000;
+    const FA_AUTO_RECOMPUTE_MS = 500;
     let lastFaAutoTime = 0;
 
     // -------- Rain Curve Editor --------
@@ -873,10 +917,10 @@
     // Control points: {x:0-1 (time in period), y:0-1 (rain multiplier)}
     // Always sorted by x. Endpoints at x=0 and x=1 can be moved vertically but not removed.
     let curvePoints = [
-      { x: 0, y: 0 },
-      { x: 0.08, y: 1 },
-      { x: 0.35, y: 0 },
-      { x: 1, y: 0 }
+      { x: 0, y: 0.30 },
+      { x: 0.25, y: 0.40 },
+      { x: 0.60, y: 0.30 },
+      { x: 1, y: 0.25 }
     ];
 
     function sampleCurve(t) {
@@ -1034,22 +1078,22 @@
 
     // Presets
     document.getElementById('curvePresetBurst').addEventListener('click', () => {
-      curvePoints = [{ x: 0, y: 1 }, { x: 0.08, y: 0.6 }, { x: 0.25, y: 0.15 }, { x: 1, y: 0 }];
+      curvePoints = [{ x: 0, y: 0.5 }, { x: 0.06, y: 0.35 }, { x: 0.20, y: 0.08 }, { x: 1, y: 0 }];
       drawCurve();
     });
     document.getElementById('curvePresetSine').addEventListener('click', () => {
       curvePoints = [];
       for (let i = 0; i <= 8; i++) {
-        curvePoints.push({ x: i / 8, y: 0.5 + 0.5 * Math.sin(i / 8 * Math.PI * 2) });
+        curvePoints.push({ x: i / 8, y: 0.2 + 0.2 * Math.sin(i / 8 * Math.PI * 2) });
       }
       drawCurve();
     });
     document.getElementById('curvePresetFlat').addEventListener('click', () => {
-      curvePoints = [{ x: 0, y: 0.5 }, { x: 1, y: 0.5 }];
+      curvePoints = [{ x: 0, y: 0.25 }, { x: 1, y: 0.25 }];
       drawCurve();
     });
     document.getElementById('curvePresetReset').addEventListener('click', () => {
-      curvePoints = [{ x: 0, y: 1 }, { x: 0.08, y: 0.6 }, { x: 0.25, y: 0.15 }, { x: 1, y: 0 }];
+      curvePoints = [{ x: 0, y: 0.30 }, { x: 0.25, y: 0.40 }, { x: 0.60, y: 0.30 }, { x: 1, y: 0.25 }];
       drawCurve();
     });
 
@@ -1706,20 +1750,34 @@
       return true;
     }
 
+    // Async recompute: sends data to worker, result arrives later via onmessage.
+    // No main-thread stall. Skipped if worker is already busy (next interval
+    // will catch up).
     function recomputeFlowAccumulation() {
       if (!hData || !vData) return;
-      // Refresh hData from GPU first (erosion may have moved it since last sync).
       readbackHTex();
-      const { fa: faData, dir: dirData } = computeFlowAccumulation(hData, vData, gpuN);
+      ensureFaWorker();
+      if (faWorkerBusy) return;
+      faWorkerBusy = true;
+      const hCopy = new Float32Array(hData);
+      const vCopy = new Uint8Array(vData);
+      faWorker.postMessage(
+        { hBuf: hCopy.buffer, vBuf: vCopy.buffer, n: gpuN },
+        [hCopy.buffer, vCopy.buffer]
+      );
+      lastFaAutoTime = performance.now();
+    }
+
+    // Synchronous version used only during initial terrain build (before the
+    // first frame, when we need the FA/dir textures ready immediately).
+    function recomputeFlowAccumulationSync() {
+      if (!hData || !vData) return;
+      readbackHTex();
+      const { fa: faData, dir: dirData } = computeFlowAccumulationSync(hData, vData, gpuN);
       gl.bindTexture(gl.TEXTURE_2D, faTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, faData);
       gl.bindTexture(gl.TEXTURE_2D, dirTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, dirData);
-      // demHMin/demHMax stay pinned to the original base-DEM range set by
-      // computeBaseHMinMax(). This keeps the elevation color ramp and
-      // grayscale hillshade stable as erosion / deposition reshapes the
-      // terrain. Eroded valleys simply map below the original minimum on the
-      // ramp (clamped to the low color), which is the correct visual.
       lastFaAutoTime = performance.now();
     }
 
@@ -1733,7 +1791,7 @@
       uploadValidTexture();
       uploadBaseHTexture();
       seedHFromBase();
-      recomputeFlowAccumulation();
+      recomputeFlowAccumulationSync();
       mappingDirty = false;
       faPendingRecompute = false;
     }
@@ -1745,7 +1803,7 @@
       seedHFromBase();
       clearDemBrush();
       computeBaseHMinMax();
-      recomputeFlowAccumulation();
+      recomputeFlowAccumulationSync();
       faPendingRecompute = false;
     }
 
