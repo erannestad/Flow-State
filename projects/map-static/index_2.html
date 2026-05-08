@@ -37,7 +37,7 @@
         <div class="toggle-container" id="toggle-options-container"></div>
       </div>
       <div class="layer-toggles">
-        <label><input type="checkbox" id="toggle-dem"> DEM hillshade</label>
+        <label><input type="checkbox" id="toggle-dem" checked> DEM hillshade</label>
         <label><input type="checkbox" id="toggle-elev-color"> elevation color</label>
         <label><input type="checkbox" id="toggle-satellite"> satellite</label>
         <label><input type="checkbox" id="toggle-middle" checked> noise tiles</label>
@@ -96,7 +96,7 @@ const s = p => {
   function newPath() {
     var randomLat = getRandomInt(25, 78);
     var randomLng = getRandomInt(-175, -60);
-    map.setZoom(DEFAULT_ZOOM - 1);
+    map.setZoom(DEFAULT_ZOOM);
     map.panTo([randomLat, randomLng]);
   }
   document.getElementById('new-path').addEventListener('click', newPath);
@@ -399,7 +399,7 @@ const s = p => {
 
   // ---- Add layers in order ----
   bottomTiles.addTo(map);
-  // demLayer.addTo(map); // hidden by default
+  demLayer.addTo(map);
   middleTiles.addTo(map);
   textTiles.addTo(map);
 
@@ -472,100 +472,56 @@ const s = p => {
     var CA_FS = `#version 300 es
       precision highp float;
       in vec2 v_uv;
-      uniform sampler2D u_W, u_H, u_valid, u_brush, u_Dir;
-      uniform float u_flow, u_rain, u_evap, u_advect;
+      uniform sampler2D u_W, u_H, u_valid, u_brush;
+      uniform float u_flow, u_rain, u_evap;
       uniform vec2 u_texelSize;
       out float outW;
-      const ivec2 d8[8] = ivec2[8](
-        ivec2(-1,-1), ivec2(0,-1), ivec2(1,-1),
-        ivec2(-1, 0),              ivec2(1, 0),
-        ivec2(-1, 1), ivec2(0, 1), ivec2(1, 1)
-      );
+      const ivec2 d8[8] = ivec2[8](ivec2(-1,-1),ivec2(0,-1),ivec2(1,-1),ivec2(-1,0),ivec2(1,0),ivec2(-1,1),ivec2(0,1),ivec2(1,1));
       void main() {
-        float v = texture(u_valid, v_uv).r;
-        if (v < 0.5) { outW = 0.0; return; }
-        float wOrig = texture(u_W, v_uv).r;
-        float hHere = texture(u_H, v_uv).r;
-        float wHere = wOrig + u_rain + texture(u_brush, v_uv).r;
+        if (texture(u_valid, v_uv).r < 0.5) { outW = 0.0; return; }
+        float wHere = texture(u_W, v_uv).r + u_rain + texture(u_brush, v_uv).r;
         if (wHere <= 0.0) { outW = 0.0; return; }
-        float sHere = hHere + wHere;
-        float flow = clamp(u_flow, 0.0, 1.0);
-        float advect = clamp(u_advect, 0.0, 1.0);
-        float spreadRate = 0.25 * flow;
+        float sHere = texture(u_H, v_uv).r + wHere;
+        float rate = 0.25 * clamp(u_flow, 0.0, 1.0);
         float newW = wHere;
         for (int i = 0; i < 8; i++) {
           vec2 nuv = v_uv + vec2(float(d8[i].x), float(d8[i].y)) * u_texelSize;
-          float nv = texture(u_valid, nuv).r;
-          if (nv < 0.5) continue;
+          if (texture(u_valid, nuv).r < 0.5) continue;
           float wN = texture(u_W, nuv).r;
-          float sN = texture(u_H, nuv).r + wN;
-          float diff = sN - sHere;
-          float xfer;
-          if (diff > 0.0) xfer =  min(spreadRate * diff, 0.5 * wN)    / 8.0;
-          else            xfer = -min(spreadRate * (-diff), 0.5 * wHere) / 8.0;
-          newW += xfer;
+          float diff = (texture(u_H, nuv).r + wN) - sHere;
+          if (diff > 0.0) newW += min(rate * diff, 0.5 * wN)    / 8.0;
+          else            newW -= min(rate * (-diff), 0.5 * wHere) / 8.0;
         }
         newW = max(newW, 0.0);
-        int myDir = int(texture(u_Dir, v_uv).r + 0.5);
-        if (myDir >= 1 && myDir <= 8) newW -= advect * wOrig;
         for (int i = 0; i < 8; i++) {
-          vec2 nuv = v_uv + vec2(float(d8[i].x), float(d8[i].y)) * u_texelSize;
-          float nv = texture(u_valid, nuv).r;
-          if (nv < 0.5) continue;
-          int nDir = int(texture(u_Dir, nuv).r + 0.5);
-          if (nDir == 8 - i) newW += advect * texture(u_W, nuv).r;
+          if (texture(u_valid, v_uv + vec2(float(d8[i].x), float(d8[i].y)) * u_texelSize).r < 0.5)
+            { newW *= 0.4; break; }
         }
-        for (int i = 0; i < 8; i++) {
-          vec2 nuv = v_uv + vec2(float(d8[i].x), float(d8[i].y)) * u_texelSize;
-          if (texture(u_valid, nuv).r < 0.5) { newW *= 0.4; break; }
-        }
-        if (myDir == 0) newW *= 0.92;
-        newW *= max(0.0, 1.0 - u_evap);
-        outW = clamp(newW, 0.0, 1.0e5);
+        outW = clamp(newW * max(0.0, 1.0 - u_evap), 0.0, 1.0e5);
       }`;
 
     var CA_RENDER_FS = `#version 300 es
       precision highp float;
       in vec2 v_uv;
-      uniform sampler2D u_W, u_H, u_FA, u_valid;
-      uniform float u_opacity, u_showDem, u_showWater, u_showFA;
-      uniform float u_hMin, u_hMax;
-      uniform vec2 u_texelSize;
+      uniform sampler2D u_W, u_FA, u_valid;
+      uniform float u_opacity;
       out vec4 fragColor;
       void main() {
-        float v = texture(u_valid, v_uv).r;
-        if (v < 0.5) { fragColor = vec4(0.0); return; }
+        if (texture(u_valid, v_uv).r < 0.5) { fragColor = vec4(0.0); return; }
         vec3 result = vec3(0.0); float resultA = 0.0;
-        if (u_showDem > 0.5) {
-          float hC = texture(u_H, v_uv).r;
-          float hL = texture(u_H, v_uv + vec2(-u_texelSize.x, 0.0)).r;
-          float hR = texture(u_H, v_uv + vec2( u_texelSize.x, 0.0)).r;
-          float hD = texture(u_H, v_uv + vec2(0.0, -u_texelSize.y)).r;
-          float hU = texture(u_H, v_uv + vec2(0.0,  u_texelSize.y)).r;
-          vec3 normal = normalize(vec3((hL-hR)*2.5, (hD-hU)*2.5, 2.0));
-          vec3 light  = normalize(vec3(-1.0, 1.0, 1.0));
-          float shade = clamp(dot(normal, light)*0.5+0.5, 0.15, 1.0);
-          float nrm   = clamp((hC-u_hMin)/max(1.0,u_hMax-u_hMin), 0.0, 1.0);
-          result = vec3(mix(shade, nrm, 0.3)); resultA = 0.7;
-        }
-        if (u_showFA > 0.5) {
-          float fa = texture(u_FA, v_uv).r;
-          float t  = pow(fa, 0.5);
-          float faA = smoothstep(0.05, 0.3, t) * 0.7 * u_opacity;
-          vec3 faC  = mix(vec3(0.05,0.08,0.18), vec3(0.2,0.5,0.95), t);
-          result = result*(1.0-faA)+faC*faA; resultA = resultA*(1.0-faA)+faA;
-        }
-        if (u_showWater > 0.5) {
-          float ww = max(0.0, texture(u_W, v_uv).r);
-          float t  = 1.0 - exp(-ww * 0.18);
-          float wA = min(1.0, ww * 2.8) * u_opacity;
-          vec3 c;
-          if      (t < 0.25) { float k=t/0.25;        c=vec3(0.0,k,(160.0+95.0*k)/255.0); }
-          else if (t < 0.5)  { float k=(t-0.25)/0.25; c=vec3(k,1.0,1.0-k); }
-          else if (t < 0.75) { float k=(t-0.5)/0.25;  c=vec3(1.0,1.0-k,0.0); }
-          else               { float k=(t-0.75)/0.25;  c=vec3(1.0,40.0*k/255.0,0.0); }
-          result = result*(1.0-wA)+c*wA; resultA = resultA*(1.0-wA)+wA;
-        }
+        float fAt = pow(texture(u_FA, v_uv).r, 0.5);
+        float faA = smoothstep(0.55, 0.85, fAt) * 0.18 * u_opacity;
+        vec3 faC = mix(vec3(0.05,0.08,0.18), vec3(0.2,0.5,0.95), fAt);
+        result = result*(1.0-faA) + faC*faA; resultA = resultA*(1.0-faA) + faA;
+        float ww = max(0.0, texture(u_W, v_uv).r);
+        float t = 1.0 - exp(-ww * 0.18);
+        float wA = smoothstep(0.28, 0.7, ww) * u_opacity;
+        vec3 c;
+        if      (t < 0.25) { float k=t/0.25;        c=vec3(0.0,k,(160.0+95.0*k)/255.0); }
+        else if (t < 0.5)  { float k=(t-0.25)/0.25; c=vec3(k,1.0,1.0-k); }
+        else if (t < 0.75) { float k=(t-0.5)/0.25;  c=vec3(1.0,1.0-k,0.0); }
+        else               { float k=(t-0.75)/0.25;  c=vec3(1.0,40.0*k/255.0,0.0); }
+        result = result*(1.0-wA)+c*wA; resultA = resultA*(1.0-wA)+wA;
         fragColor = vec4(result, resultA);
       }`;
 
@@ -730,7 +686,7 @@ const s = p => {
     function getViewportDefaultExtent() {
       var b = map.getBounds();
       var w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
-      var dx = e - w, dy = n - s, m = 0.12;
+      var dx = e - w, dy = n - s, m = -0.15;
       return { lngMin: w+dx*m, lngMax: e-dx*m, latMin: s+dy*m, latMax: n-dy*m };
     }
     function extentLngLatToUv(lng, lat) {
@@ -868,9 +824,6 @@ const s = p => {
       for (var k = 0; k < gpuN * gpuN; k++) {
         if (vData[k] < 128) continue;
         baseHData[k] = (baseHData[k] - hMin) / hRange * 100.0;
-        // Tiny asymmetric jitter breaks D8 tie-breaking on flat terrain
-        // which otherwise creates regular parallel channel lines.
-        baseHData[k] += Math.random() * 0.08;
       }
     }
 
@@ -888,19 +841,17 @@ const s = p => {
     function rebuildGpuTerrain() {
       if (!demHeights || !simExtent) return;
       sampleBaseTerrain();
-      var validCount = 0;
-      for (var k = 0; k < gpuN * gpuN; k++) if (vData[k] >= 128) validCount++;
-      if (validCount / (gpuN * gpuN) < 0.15) {
-        newPath();
-        return;
-      }
       gl.bindTexture(gl.TEXTURE_2D, validTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8,   gpuN, gpuN, 0, gl.RED, gl.UNSIGNED_BYTE, vData);
       gl.bindTexture(gl.TEXTURE_2D, hTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, baseHData);
       hData.set(baseHData);
-      // Water textures are intentionally NOT reset here — existing water adapts
-      // to the new terrain over the next several CA steps rather than cutting to black.
+      var zeros = new Float32Array(gpuN * gpuN);
+      for (var i = 0; i < 2; i++) {
+        gl.bindTexture(gl.TEXTURE_2D, wTex[i]);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, gpuN, gpuN, 0, gl.RED, gl.FLOAT, zeros);
+      }
+      wPing = 0; tick = 0;
       recomputeFlowAccumulation();
     }
 
@@ -918,7 +869,7 @@ const s = p => {
       brushDirty = false;
     }
 
-    var caParams = { run: true, flow: 0.4, rain: 1.76, rainAmp: 8.73, rainPeriod: 2324, evap: 0.008, faBoost: 30.0, opacity: 1.0 };
+    var caParams = { run: true, flow: 0.65, rain: 0.8, rainAmp: 2.0, rainPeriod: 1200, evap: 0.008, opacity: 0.9 };
     function currentRainLevel() {
       var t = (tick % caParams.rainPeriod) / caParams.rainPeriod;
       return caParams.rain + caParams.rainAmp * (1 - Math.cos(Math.PI * 2 * t)) * 0.5;
@@ -936,11 +887,10 @@ const s = p => {
         gl.uniform1i(gl.getUniformLocation(caProg, name), unit);
       }
       bind('u_W', 0, wTex[ri]); bind('u_H', 1, hTex);
-      bind('u_valid', 2, validTex); bind('u_brush', 3, brushTex); bind('u_Dir', 4, dirTex);
-      gl.uniform1f(gl.getUniformLocation(caProg, 'u_flow'),    caParams.flow);
-      gl.uniform1f(gl.getUniformLocation(caProg, 'u_rain'),    currentRainLevel() * 0.0022);
-      gl.uniform1f(gl.getUniformLocation(caProg, 'u_evap'),    caParams.evap);
-      gl.uniform1f(gl.getUniformLocation(caProg, 'u_advect'),  caParams.faBoost / 20.0);
+      bind('u_valid', 2, validTex); bind('u_brush', 3, brushTex);
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_flow'), caParams.flow);
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_rain'), currentRainLevel() * 0.0022);
+      gl.uniform1f(gl.getUniformLocation(caProg, 'u_evap'), caParams.evap);
       gl.uniform2f(gl.getUniformLocation(caProg, 'u_texelSize'), 1.0/gpuN, 1.0/gpuN);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       wPing = wi; tick++;
@@ -963,43 +913,28 @@ const s = p => {
         gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.uniform1i(gl.getUniformLocation(renderProg, name), unit);
       }
-      bind('u_W', 0, wTex[wPing]); bind('u_valid', 1, validTex);
-      bind('u_H', 2, hTex);        bind('u_FA', 3, faTex);
+      bind('u_W', 0, wTex[wPing]); bind('u_FA', 1, faTex); bind('u_valid', 2, validTex);
       var bl = lngLatToNdc(simExtent.lngMin, simExtent.latMin);
       var br = lngLatToNdc(simExtent.lngMax, simExtent.latMin);
       var tl = lngLatToNdc(simExtent.lngMin, simExtent.latMax);
       var tr = lngLatToNdc(simExtent.lngMax, simExtent.latMax);
       gl.uniform2fv(gl.getUniformLocation(renderProg, 'u_corners'),
         new Float32Array([bl[0],bl[1], br[0],br[1], tl[0],tl[1], tr[0],tr[1]]));
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_opacity'),   caParams.opacity);
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showDem'),   0.0);
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showWater'), 1.0);
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_showFA'),    0.0);
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_hMin'),      0.0);
-      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_hMax'),    100.0);
-      gl.uniform2f(gl.getUniformLocation(renderProg, 'u_texelSize'), 1.0/gpuN, 1.0/gpuN);
+      gl.uniform1f(gl.getUniformLocation(renderProg, 'u_opacity'), caParams.opacity);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       gl.disable(gl.BLEND);
     }
 
     // ---- Extent apply ----
-    // Load new DEM in the background without touching live state.
-    // simExtent and demHeights only swap in once the tiles are ready,
-    // so the existing simulation keeps running uninterrupted during the load.
-    var simLoading = false;
     async function applySimExtent(extent) {
-      if (simLoading) return;
-      simLoading = true;
+      simExtent = extent;
       try {
-        var pendingHeights = demHeights; // keep old reference live
-        await loadDemForExtent(extent);
-        if (!demHeights) { demHeights = pendingHeights; return; }
-        simExtent = extent;
-        clearBrush();
-        mappingDirty = true;
+        demHeights = null;
+        await loadDemForExtent(simExtent);
+        if (!demHeights) return;
+        clearBrush(); mappingDirty = true;
       } catch (e) { console.error('CA DEM:', e); }
-      finally { simLoading = false; }
     }
 
     // ---- Frame loop ----
@@ -1007,7 +942,7 @@ const s = p => {
     var FA_INTERVAL = 5000;
 
     function extentDriftExceeded() {
-      if (simLoading || !simExtent) return false;
+      if (!simExtent) return true;
       var c = map.getCenter();
       var cx = (simExtent.lngMin + simExtent.lngMax) / 2;
       var cy = (simExtent.latMin + simExtent.latMax) / 2;

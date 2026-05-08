@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Flow State — Static Map</title>
+  <title>Flow State — Static Map v4</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
   <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -96,7 +96,7 @@ const s = p => {
   function newPath() {
     var randomLat = getRandomInt(25, 78);
     var randomLng = getRandomInt(-175, -60);
-    map.setZoom(DEFAULT_ZOOM - 1);
+    map.setZoom(DEFAULT_ZOOM);
     map.panTo([randomLat, randomLng]);
   }
   document.getElementById('new-path').addEventListener('click', newPath);
@@ -558,7 +558,7 @@ const s = p => {
         if (u_showWater > 0.5) {
           float ww = max(0.0, texture(u_W, v_uv).r);
           float t  = 1.0 - exp(-ww * 0.18);
-          float wA = min(1.0, ww * 2.8) * u_opacity;
+          float wA = smoothstep(0.45, 0.58, ww) * u_opacity;
           vec3 c;
           if      (t < 0.25) { float k=t/0.25;        c=vec3(0.0,k,(160.0+95.0*k)/255.0); }
           else if (t < 0.5)  { float k=(t-0.25)/0.25; c=vec3(k,1.0,1.0-k); }
@@ -693,7 +693,7 @@ const s = p => {
       var gen = ++demLoadGen;
       var txMin = lonToTileX(extent.lngMin, DEM_Z), txMax = lonToTileX(extent.lngMax, DEM_Z);
       var tyMin = latToTileY(extent.latMax, DEM_Z),  tyMax = latToTileY(extent.latMin, DEM_Z);
-      var MAX_TILES = 8;
+      var MAX_TILES = 14;
       var rawMw = (txMax - txMin) + 3, rawMh = (tyMax - tyMin) + 3;
       var mw = Math.min(rawMw, MAX_TILES), mh = Math.min(rawMh, MAX_TILES);
       var ox = txMin - Math.floor((mw - (txMax - txMin + 1)) / 2);
@@ -730,7 +730,7 @@ const s = p => {
     function getViewportDefaultExtent() {
       var b = map.getBounds();
       var w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
-      var dx = e - w, dy = n - s, m = 0.12;
+      var dx = e - w, dy = n - s, m = -0.5;
       return { lngMin: w+dx*m, lngMax: e-dx*m, latMin: s+dy*m, latMax: n-dy*m };
     }
     function extentLngLatToUv(lng, lat) {
@@ -836,17 +836,29 @@ const s = p => {
       if (!demHeights || !simExtent) return;
       var dw = demCanvas.width, dh = demCanvas.height;
       baseHData.fill(0); vData.fill(0);
+
+      // Sample the grid linearly in Mercator pixel space rather than linearly
+      // in latitude. The render UV interpolates linearly in screen (Mercator)
+      // space, so the two must use the same spacing or the overlay drifts
+      // relative to the satellite tiles — especially at high latitudes where
+      // Mercator distortion is large across the extended (50%) simulation extent.
+      var wxW = worldPxFromLngLat(simExtent.lngMin, 0, DEM_Z).x; // west x
+      var wxE = worldPxFromLngLat(simExtent.lngMax, 0, DEM_Z).x; // east x
+      var wyN = worldPxFromLngLat(0, simExtent.latMax, DEM_Z).y; // north y (smaller)
+      var wyS = worldPxFromLngLat(0, simExtent.latMin, DEM_Z).y; // south y (larger)
+
       for (var y = 0; y < gpuN; y++) {
-        var vv = y / (gpuN-1);
-        var lat = simExtent.latMin + vv * (simExtent.latMax - simExtent.latMin);
+        var vv = y / (gpuN - 1);
+        // y=0 → south (wyS), y=gpuN-1 → north (wyN)
+        var mercY = wyS + vv * (wyN - wyS);
+        var ddy = mercY - demOriginWorldPx.y;
         for (var x = 0; x < gpuN; x++) {
-          var uu = x / (gpuN-1);
-          var lng = simExtent.lngMin + uu * (simExtent.lngMax - simExtent.lngMin);
-          var wp = worldPxFromLngLat(lng, lat, DEM_Z);
-          var ddx = wp.x - demOriginWorldPx.x, ddy = wp.y - demOriginWorldPx.y;
-          var k = y*gpuN+x;
-          if (ddx>=0&&ddy>=0&&ddx<dw&&ddy<dh) {
-            vData[k] = 255; baseHData[k] = sampleDemHeightUV(ddx/dw, ddy/dh);
+          var uu = x / (gpuN - 1);
+          var mercX = wxW + uu * (wxE - wxW);
+          var ddx = mercX - demOriginWorldPx.x;
+          var k = y * gpuN + x;
+          if (ddx >= 0 && ddy >= 0 && ddx < dw && ddy < dh) {
+            vData[k] = 255; baseHData[k] = sampleDemHeightUV(ddx / dw, ddy / dh);
           }
         }
       }
@@ -888,12 +900,6 @@ const s = p => {
     function rebuildGpuTerrain() {
       if (!demHeights || !simExtent) return;
       sampleBaseTerrain();
-      var validCount = 0;
-      for (var k = 0; k < gpuN * gpuN; k++) if (vData[k] >= 128) validCount++;
-      if (validCount / (gpuN * gpuN) < 0.15) {
-        newPath();
-        return;
-      }
       gl.bindTexture(gl.TEXTURE_2D, validTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8,   gpuN, gpuN, 0, gl.RED, gl.UNSIGNED_BYTE, vData);
       gl.bindTexture(gl.TEXTURE_2D, hTex);
@@ -1011,8 +1017,8 @@ const s = p => {
       var c = map.getCenter();
       var cx = (simExtent.lngMin + simExtent.lngMax) / 2;
       var cy = (simExtent.latMin + simExtent.latMax) / 2;
-      var hw = (simExtent.lngMax - simExtent.lngMin) * 0.3;
-      var hh = (simExtent.latMax - simExtent.latMin) * 0.3;
+      var hw = (simExtent.lngMax - simExtent.lngMin) * 0.2;
+      var hh = (simExtent.latMax - simExtent.latMin) * 0.2;
       return Math.abs(c.lng - cx) > hw || Math.abs(c.lat - cy) > hh;
     }
 
@@ -1048,7 +1054,7 @@ const s = p => {
       requestAnimationFrame(caFrame);
     }
 
-    gpuAlloc(256);
+    gpuAlloc(512);
     clearBrush();
     applySimExtent(getViewportDefaultExtent());
     caFrame();

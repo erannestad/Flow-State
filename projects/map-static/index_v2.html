@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Flow State — Static Map</title>
+  <title>Flow State — Static Map v2</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
   <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -96,7 +96,7 @@ const s = p => {
   function newPath() {
     var randomLat = getRandomInt(25, 78);
     var randomLng = getRandomInt(-175, -60);
-    map.setZoom(DEFAULT_ZOOM - 1);
+    map.setZoom(DEFAULT_ZOOM);
     map.panTo([randomLat, randomLng]);
   }
   document.getElementById('new-path').addEventListener('click', newPath);
@@ -693,7 +693,7 @@ const s = p => {
       var gen = ++demLoadGen;
       var txMin = lonToTileX(extent.lngMin, DEM_Z), txMax = lonToTileX(extent.lngMax, DEM_Z);
       var tyMin = latToTileY(extent.latMax, DEM_Z),  tyMax = latToTileY(extent.latMin, DEM_Z);
-      var MAX_TILES = 8;
+      var MAX_TILES = 14;
       var rawMw = (txMax - txMin) + 3, rawMh = (tyMax - tyMin) + 3;
       var mw = Math.min(rawMw, MAX_TILES), mh = Math.min(rawMh, MAX_TILES);
       var ox = txMin - Math.floor((mw - (txMax - txMin + 1)) / 2);
@@ -730,7 +730,7 @@ const s = p => {
     function getViewportDefaultExtent() {
       var b = map.getBounds();
       var w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
-      var dx = e - w, dy = n - s, m = 0.12;
+      var dx = e - w, dy = n - s, m = -0.5;
       return { lngMin: w+dx*m, lngMax: e-dx*m, latMin: s+dy*m, latMax: n-dy*m };
     }
     function extentLngLatToUv(lng, lat) {
@@ -888,12 +888,6 @@ const s = p => {
     function rebuildGpuTerrain() {
       if (!demHeights || !simExtent) return;
       sampleBaseTerrain();
-      var validCount = 0;
-      for (var k = 0; k < gpuN * gpuN; k++) if (vData[k] >= 128) validCount++;
-      if (validCount / (gpuN * gpuN) < 0.15) {
-        newPath();
-        return;
-      }
       gl.bindTexture(gl.TEXTURE_2D, validTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8,   gpuN, gpuN, 0, gl.RED, gl.UNSIGNED_BYTE, vData);
       gl.bindTexture(gl.TEXTURE_2D, hTex);
@@ -1011,8 +1005,8 @@ const s = p => {
       var c = map.getCenter();
       var cx = (simExtent.lngMin + simExtent.lngMax) / 2;
       var cy = (simExtent.latMin + simExtent.latMax) / 2;
-      var hw = (simExtent.lngMax - simExtent.lngMin) * 0.3;
-      var hh = (simExtent.latMax - simExtent.latMin) * 0.3;
+      var hw = (simExtent.lngMax - simExtent.lngMin) * 0.2;
+      var hh = (simExtent.latMax - simExtent.latMin) * 0.2;
       return Math.abs(c.lng - cx) > hw || Math.abs(c.lat - cy) > hh;
     }
 
@@ -1048,7 +1042,7 @@ const s = p => {
       requestAnimationFrame(caFrame);
     }
 
-    gpuAlloc(256);
+    gpuAlloc(512);
     clearBrush();
     applySimExtent(getViewportDefaultExtent());
     caFrame();
