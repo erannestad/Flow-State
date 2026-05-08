@@ -1,0 +1,225 @@
+:root {
+  --blue-1: #182758;
+  --blue-2: #4d639d;
+  --grey-1: #a0a0a0;
+  --grey-2: gainsboro;
+}
+
+body {
+  color: var(--grey-1);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 10px;
+  padding: 48px;
+  box-sizing: border-box;
+  margin: 0;
+  background: #111;
+}
+
+wrapper {
+  width: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+}
+
+.map-wrapper { }
+
+#map {
+  width: 800px;
+  height: 800px;
+  background: #0a0a0a;
+}
+
+.right-controls {
+  width: 200px;
+  flex-shrink: 0;
+  max-width: 100%;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 12px;
+  align-content: flex-start;
+  align-items: flex-start;
+}
+
+#custom-map-controls {
+  display: flex;
+  flex-wrap: wrap;
+  flex-direction: column;
+  width: auto;
+  z-index: 100;
+}
+
+#zoom-container {
+  z-index: 100;
+}
+
+.map-bottom {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.map-bottom .meta-container {
+  text-align: right;
+}
+
+.show { display: block !important; }
+.hideUI { visibility: hidden; }
+
+.toggle-container {
+  width: 100%;
+  display: none;
+  border-bottom: 1px solid;
+  margin-top: 12px;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+form .row { display: block; }
+
+/***********************/
+/*  MAP FUNCTIONALITY  */
+
+.above-threshold { visibility: visible; }
+.below-threshold { visibility: hidden; }
+
+.leaflet-overlay-pane {
+  mix-blend-mode: exclusion;
+  z-index: 1000;
+}
+
+.tile-wrapper {
+  display: block;
+  background-color: white;
+  width: 128px;
+  height: 128px;
+  overflow: hidden !important;
+}
+img.blur {
+  filter: brightness(0.9);
+  z-index: 100;
+  object-fit: cover;
+  width: 512px !important;
+  border: white solid 0px;
+}
+
+/***************/
+/*  TYPOGRAPHY */
+
+a, a:-webkit-any-link {
+  color: var(--blue-2);
+}
+
+#custom-map-controls, #text-controls {
+  font-family: 'Roboto Mono', monospace;
+  font-size: 10px;
+}
+
+#map > div.leaflet-control-container > div.leaflet-bottom.leaflet-right > div > a {
+  display: none;
+}
+
+a:hover {
+  background-color: var(--blue-1);
+  color: white;
+}
+
+button {
+  padding: 5px 18px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 11px;
+  border: none;
+  text-decoration: none;
+  color: var(--blue-1);
+  cursor: pointer;
+  background-color: var(--grey-2);
+  display: block;
+  border-radius: 3px;
+}
+button:hover, .leaflet-control-zoom a:hover, .expanded {
+  background-color: var(--blue-2);
+  color: white;
+}
+
+.expanded:after { content: ' -'; }
+.expanded:before { content: '- '; }
+
+.leaflet-bar a {
+  background-color: #ddd;
+  border-bottom: 1px solid #ccc;
+  width: 26px;
+  height: 26px;
+  line-height: 26px;
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  color: var(--blue-1);
+}
+.leaflet-bar { box-shadow: none; }
+
+/* DEM layer controls */
+.layer-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.layer-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--grey-1);
+}
+.layer-toggles input[type="checkbox"] {
+  accent-color: var(--blue-2);
+}
+
+/*****************/
+/* MEDIA QUERIES */
+
+@media screen and (max-width: 1200px),
+       screen and (max-height: 900px) {
+  #map {
+    width: 600px;
+    height: 600px;
+  }
+}
+
+@media screen and (max-width: 800px) {
+  wrapper {
+    flex-direction: column-reverse;
+  }
+  .map-wrapper {
+    width: 100%;
+    max-width: 800px;
+  }
+  #map {
+    aspect-ratio: 1/1;
+    width: 100%;
+    height: unset;
+  }
+  .controls-wrapper {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+  .right-controls {
+    align-items: flex-end;
+  }
+}
+
+@media screen and (max-width: 800px),
+       screen and (max-height: 800px) {
+  body {
+    padding: 0;
+  }
+}

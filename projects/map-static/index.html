@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flow State — Static Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+</head>
+
+<body>
+
+<wrapper>
+  <div class="map-wrapper">
+    <div id="map"></div>
+    <div class="map-bottom">
+      <div class="coords-container">
+        <p id="latContainer"></p>
+      </div>
+      <div class="meta-container">
+        <p id="title"><i>Flow State</i>, 2026<br>
+          <a href="https://ericrannestad.com/" target="_blank">Eric Rannestad</a></p>
+      </div>
+    </div>
+  </div>
+  <div class="controls-wrapper">
+    <div id="custom-map-controls">
+      <div id="zoom-container"></div><br>
+    </div>
+    <div class="right-controls">
+      <button id="new-path">new location</button>
+      <div id="option-controls">
+        <button class="text" id="toggle-options-button">options</button>
+        <div class="toggle-container" id="toggle-options-container"></div>
+      </div>
+      <div class="layer-toggles">
+        <label><input type="checkbox" id="toggle-dem" checked> DEM hillshade</label>
+        <label><input type="checkbox" id="toggle-elev-color"> elevation color</label>
+        <label><input type="checkbox" id="toggle-satellite"> satellite</label>
+        <label><input type="checkbox" id="toggle-middle" checked> noise tiles</label>
+        <label><input type="checkbox" id="toggle-text" checked> text overlay</label>
+      </div>
+    </div>
+  </div>
+</wrapper>
+
+</body>
+
+<script>
+
+// Merwin fragments for the text grid layer
+var textFragments = Array(270).fill(' ').concat([
+  "everything is going to have to be put back.",
+  "everything is going to have to be put back.",
+  "everything is going to have to be put back.",
+  "everything is going to have to be put back.",
+  "start with the leaves,",
+  "the small twigs,",
+  "and the nests that have been",
+  "shaken, ripped, or broken off",
+  "by the fall;",
+  "these must be gathered",
+  "and attached once again",
+  "to their proper places.",
+]);
+
+/** Default view: performance = zoomed out (few tiles); DEM uses correct m/px from WGS84 tile bounds. */
+var DEFAULT_LAT = 75.356794;
+var DEFAULT_LNG = -151.1143;
+var DEFAULT_ZOOM = 14;
+
+var options = {
+  mapOptions: { pan: true, mapCenter: { x: DEFAULT_LAT, y: DEFAULT_LNG } },
+  uiSettings: { hideControls: false }
+};
+
+const s = p => {
+
+  var map = L.map('map', {
+    center: [DEFAULT_LAT, DEFAULT_LNG],
+    zoom: DEFAULT_ZOOM,
+    zoomControl: false,
+    crs: L.CRS.EPSG3857
+  });
+
+  function getRandomInt(min, max) {
+    min = Math.ceil(min);
+    max = Math.floor(max);
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function newPath() {
+    var randomLat = getRandomInt(25, 78);
+    var randomLng = getRandomInt(-175, -60);
+    map.setZoom(DEFAULT_ZOOM);
+    map.panTo([randomLat, randomLng]);
+  }
+  document.getElementById('new-path').addEventListener('click', newPath);
+
+  // Options UI
+  var toggleOptionsButton = document.getElementById('toggle-options-button');
+  var optionsToggleContainer = document.getElementById('toggle-options-container');
+  toggleOptionsButton.addEventListener('click', function () {
+    optionsToggleContainer.classList.toggle('show');
+    toggleOptionsButton.classList.toggle('expanded');
+  });
+
+  optionsToggleContainer.innerHTML = `
+    <form id="options-form" name="options">
+      <div class="row">
+        <label for="pan-selection">pan map:</label>
+        <select id="pan-selection">
+          <option selected value="true">on</option>
+          <option value="false">off</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="hide-controls-selection">hide controls:</label>
+        <select id="hide-controls-selection">
+          <option selected value="false">show</option>
+          <option value="true">hide</option>
+        </select>
+      </div>
+    </form>`;
+
+  var form = document.getElementById('options-form');
+  form.querySelector('#pan-selection').addEventListener('change', updateOptionsObj);
+  form.querySelector('#hide-controls-selection').addEventListener('change', updateOptionsObj);
+
+  function updateOptionsObj() {
+    options.mapOptions.pan = form.querySelector('#pan-selection').value;
+    options.uiSettings.hideControls = form.querySelector('#hide-controls-selection').value;
+    updateUI();
+  }
+
+  function updateUI() {
+    var controlsWrapper = document.querySelector('.controls-wrapper');
+    var mapBottom = document.querySelector('.map-bottom');
+    [controlsWrapper, mapBottom].forEach(el => {
+      if (options.uiSettings.hideControls === true || options.uiSettings.hideControls === 'true') {
+        el.classList.add('hideUI');
+      } else {
+        el.classList.remove('hideUI');
+      }
+    });
+  }
+  updateOptionsObj();
+
+  // ---- DEM Hillshade (Terrarium): extends TileLayer so URL z/x/y matches
+  // bottomTiles (zoomOffset + detectRetina) — same slippy grid as Esri imagery.
+  // Esri uses .../tile/{z}/{y}/{x}; Terrarium uses .../{z}/{x}/{y}.png — same
+  // numeric z,x,y (XYZ); only path order differs. Never use raw coords.z in
+  // the URL: use getTileUrl() so z follows _getZoomForUrl() like other layers.
+
+  var DEMHillshade = L.TileLayer.extend({
+    options: {
+      showElevColor: false,
+      maxNativeZoom: 12,
+      keepBuffer: 0,
+      crossOrigin: true,
+      tileSize: 256,
+      noWrap: true
+    },
+
+    initialize: function (customOpts) {
+      L.TileLayer.prototype.initialize.call(this,
+        'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+        L.extend({}, DEMHillshade.prototype.options, customOpts));
+    },
+
+    createTile: function (coords, done) {
+      var tile = L.DomUtil.create('canvas', 'leaflet-tile');
+      var size = this.getTileSize();
+      tile.width = size.x;
+      tile.height = size.y;
+
+      var mapRef = this._map;
+      if (!mapRef) {
+        done(null, tile);
+        return tile;
+      }
+
+      var nwPx = L.point(coords.x * 256, coords.y * 256);
+      var sePx = nwPx.add(L.point(256, 256));
+      var nw = mapRef.unproject(nwPx, coords.z);
+      var se = mapRef.unproject(sePx, coords.z);
+
+      var R = 6371000;
+      var latMid = ((nw.lat + se.lat) / 2) * Math.PI / 180;
+      var tileWidthM = Math.abs(se.lng - nw.lng) * (Math.PI / 180) * R * Math.cos(latMid);
+      var tileHeightM = Math.abs(nw.lat - se.lat) * (Math.PI / 180) * R;
+
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function () {
+        var offscreen = document.createElement('canvas');
+        offscreen.width = img.width;
+        offscreen.height = img.height;
+        var oc = offscreen.getContext('2d');
+        oc.drawImage(img, 0, 0);
+
+        var w = img.width, h = img.height;
+        var mPerSrcPixelX = tileWidthM / w;
+        var mPerSrcPixelY = tileHeightM / h;
+        var px = oc.getImageData(0, 0, w, h).data;
+
+        var elev = new Float32Array(w * h);
+        for (var i = 0; i < w * h; i++) {
+          var r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+          elev[i] = (r * 256 + g + b / 256) - 32768;
+        }
+
+        var ctx = tile.getContext('2d');
+        var out = ctx.createImageData(size.x, size.y);
+        var scaleX = w / size.x, scaleY = h / size.y;
+        var showColor = this.options.showElevColor;
+
+        var eMin = 1e9, eMax = -1e9;
+        if (showColor) {
+          for (var i = 0; i < elev.length; i++) {
+            if (elev[i] < eMin) eMin = elev[i];
+            if (elev[i] > eMax) eMax = elev[i];
+          }
+          if (eMax - eMin < 1) eMax = eMin + 1;
+        }
+
+        var alt = 45 * Math.PI / 180;
+        var az = 315 * Math.PI / 180;
+        var lx = Math.cos(alt) * Math.sin(az);
+        var ly = Math.cos(alt) * Math.cos(az);
+        var lz = Math.sin(alt);
+
+        for (var ty = 0; ty < size.y; ty++) {
+          for (var tx = 0; tx < size.x; tx++) {
+            var sx = Math.min(w - 2, Math.max(1, Math.floor(tx * scaleX)));
+            var sy = Math.min(h - 2, Math.max(1, Math.floor(ty * scaleY)));
+
+            var dzdx_east = (elev[sy * w + (sx + 1)] - elev[sy * w + (sx - 1)]) / (2 * mPerSrcPixelX);
+            var dzdn_north = -(elev[(sy + 1) * w + sx] - elev[(sy - 1) * w + sx]) / (2 * mPerSrcPixelY);
+
+            var nx = -dzdx_east;
+            var ny = -dzdn_north;
+            var nz = 1;
+            var invLen = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz);
+            nx *= invLen; ny *= invLen; nz *= invLen;
+
+            var shade = Math.max(0, nx * lx + ny * ly + nz * lz);
+
+            var idx = (ty * size.x + tx) * 4;
+
+            if (showColor) {
+              var t = (elev[sy * w + sx] - eMin) / (eMax - eMin);
+              t = Math.max(0, Math.min(1, t));
+              var cr, cg, cb;
+              if (t < 0.15) {
+                var f = t / 0.15;
+                cr = 46 + f * (140 - 46); cg = 143 + f * (199 - 143); cb = 61 + f * (56 - 61);
+              } else if (t < 0.30) {
+                var f = (t - 0.15) / 0.15;
+                cr = 140 + f * (235 - 140); cg = 199 + f * (219 - 199); cb = 56 + f * (107 - 56);
+              } else if (t < 0.50) {
+                var f = (t - 0.30) / 0.20;
+                cr = 235 + f * (224 - 235); cg = 219 + f * (158 - 219); cb = 107 + f * (77 - 107);
+              } else if (t < 0.70) {
+                var f = (t - 0.50) / 0.20;
+                cr = 224 + f * (184 - 224); cg = 158 + f * (112 - 158); cb = 77 + f * (82 - 77);
+              } else if (t < 0.85) {
+                var f = (t - 0.70) / 0.15;
+                cr = 184 + f * (179 - 184); cg = 112 + f * (179 - 112); cb = 82 + f * (189 - 82);
+              } else {
+                var f = (t - 0.85) / 0.15;
+                cr = 179 + f * (247 - 179); cg = 179 + f * (250 - 179); cb = 189 + f * (255 - 189);
+              }
+              var mod = 0.5 + 0.5 * shade;
+              out.data[idx] = Math.min(255, cr * mod);
+              out.data[idx + 1] = Math.min(255, cg * mod);
+              out.data[idx + 2] = Math.min(255, cb * mod);
+              out.data[idx + 3] = 230;
+            } else {
+              var v = Math.floor(shade * 255);
+              out.data[idx] = v;
+              out.data[idx + 1] = v;
+              out.data[idx + 2] = v;
+              out.data[idx + 3] = 220;
+            }
+          }
+        }
+        ctx.putImageData(out, 0, 0);
+        done(null, tile);
+      }.bind(this);
+
+      img.onerror = function () { done(null, tile); };
+      img.src = this.getTileUrl(coords);
+
+      return tile;
+    }
+  });
+
+  // ---- Satellite layer (Esri) ----
+  var satellite = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: '&copy; Esri', tileSize: 256, maxZoom: 18 }
+  );
+
+  // ---- Bottom tiles (scrambled satellite, same as Shipwreck) ----
+  L.TileLayer.NewURL = L.TileLayer.extend({
+    getTileUrl: function (coords) {
+      var i = getRandomInt(0, 1);
+      coords.x = coords.x + i;
+      if (getRandomInt(0, 100) < 4) {
+        coords.x = coords.x + getRandomInt(0, 50);
+        coords.y = coords.y + getRandomInt(0, 50);
+      }
+      return L.TileLayer.prototype.getTileUrl.call(this, coords);
+    }
+  });
+  L.tileLayer.NewURL = function (url, opts) { return new L.TileLayer.NewURL(url, opts); };
+
+  var bottomTiles = L.tileLayer.NewURL(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { tileSize: 256, zoomOffset: -1, noWrap: true, detectRetina: true }
+  );
+
+  var setTileBlur = function (tileObj, threshold) {
+    tileObj.randomInt = getRandomInt(0, 100);
+    tileObj.tile.dataset.randomInt = tileObj.randomInt;
+    if (tileObj.randomInt > threshold) {
+      tileObj.tile.classList.add('blur');
+      var wrapper = document.createElement('div');
+      wrapper.className = 'tile-wrapper';
+      tileObj.tile.parentNode.insertBefore(wrapper, tileObj.tile);
+      wrapper.appendChild(tileObj.tile);
+    }
+  };
+  bottomTiles.on('tileload', function (tileObj) { setTileBlur(tileObj, 98); });
+
+  // ---- Middle tiles (noise-based visibility) ----
+  function generateNoise(x, y) { return p.noise(x, y); }
+
+  var setTileVisibility = function (tileObj, threshold) {
+    tileObj.tile.dataset.tileNoiseValue = generateNoise(
+      tileObj.tile._leaflet_pos.x / 700,
+      tileObj.tile._leaflet_pos.y / 500
+    );
+    if (tileObj.tile.dataset.tileNoiseValue > threshold) {
+      tileObj.tile.classList.add('above-threshold');
+      tileObj.tile.classList.remove('below-threshold');
+    } else {
+      tileObj.tile.classList.remove('above-threshold');
+      tileObj.tile.classList.add('below-threshold');
+    }
+  };
+
+  var middleTiles = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
+      tileSize: 64,
+      zoomOffset: 1,
+      noWrap: true,
+      detectRetina: true,
+      className: 'noise-visibility-tile'
+    }
+  );
+  middleTiles.on('tileload', function (tileObj) { setTileVisibility(tileObj, 0.5); });
+
+  // ---- Text + line overlay ----
+  var textTiles = new L.GridLayer();
+  textTiles.createTile = function (coords) {
+    var tile = L.DomUtil.create('canvas', 'leaflet-tile');
+    var ctx = tile.getContext('2d');
+    var size = this.getTileSize();
+    tile.width = size.x;
+    tile.height = size.y;
+
+    var a = getRandomInt(0, 256), b = getRandomInt(0, 256);
+    var c = getRandomInt(0, 256), d = getRandomInt(0, 256);
+    var e = getRandomInt(0, textFragments.length - 1);
+
+    ctx.strokeStyle = 'white';
+    ctx.beginPath();
+    ctx.moveTo(a, b);
+    ctx.lineTo(c, d);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.font = 'normal 10px Roboto Mono';
+    ctx.fillStyle = 'white';
+    ctx.fillText(textFragments[e], 5, a);
+
+    return tile;
+  };
+
+  // ---- DEM layer instance ----
+  var demLayer = new DEMHillshade({ tileSize: 256, opacity: 0.85, maxNativeZoom: 12 });
+
+  // ---- Add layers in order ----
+  bottomTiles.addTo(map);
+  demLayer.addTo(map);
+  middleTiles.addTo(map);
+  textTiles.addTo(map);
+
+  // ---- Layer toggles ----
+  document.getElementById('toggle-dem').addEventListener('change', function (e) {
+    if (e.target.checked) demLayer.addTo(map); else map.removeLayer(demLayer);
+  });
+  document.getElementById('toggle-elev-color').addEventListener('change', function (e) {
+    demLayer.options.showElevColor = e.target.checked;
+    demLayer.redraw();
+  });
+  document.getElementById('toggle-satellite').addEventListener('change', function (e) {
+    if (e.target.checked) satellite.addTo(map); else map.removeLayer(satellite);
+  });
+  document.getElementById('toggle-middle').addEventListener('change', function (e) {
+    if (e.target.checked) middleTiles.addTo(map); else map.removeLayer(middleTiles);
+  });
+  document.getElementById('toggle-text').addEventListener('change', function (e) {
+    if (e.target.checked) textTiles.addTo(map); else map.removeLayer(textTiles);
+  });
+
+  // ---- Zoom control ----
+  var zoom = L.control.zoom({ position: 'topleft' });
+  zoom.addTo(map);
+  document.getElementById('zoom-container').appendChild(zoom.getContainer());
+
+  // ---- Coords + auto-pan ----
+  var latContainer = document.getElementById('latContainer');
+
+  setInterval(function () {
+    var center = map.getCenter();
+    latContainer.innerHTML =
+      'latitude: ' + center.lat.toFixed(4) + '<br>longitude: ' + center.lng.toFixed(4);
+
+    if (options.mapOptions.pan === false || options.mapOptions.pan === 'false') return;
+    map.panBy([50, 50], { animate: true, duration: 5 });
+  }, 1000);
+
+  // Animate noise middle-layer tiles (class set on tile images by Leaflet)
+  setInterval(function () {
+    var tiles = document.querySelectorAll('img.leaflet-tile.noise-visibility-tile');
+    for (var i = 0; i < tiles.length; i++) {
+      var v = parseFloat(tiles[i].dataset.tileNoiseValue || 0.5);
+      v += (Math.random() - 0.5) * 0.02;
+      tiles[i].dataset.tileNoiseValue = v;
+      if (v > 0.5) {
+        tiles[i].classList.add('above-threshold');
+        tiles[i].classList.remove('below-threshold');
+      } else {
+        tiles[i].classList.remove('above-threshold');
+        tiles[i].classList.add('below-threshold');
+      }
+    }
+  }, 1000);
+
+};
+
+new p5(s);
+
+</script>
+
+</html>
