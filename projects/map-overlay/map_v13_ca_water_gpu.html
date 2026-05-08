@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Water Flow v11 (Smooth render + Elevation color + Erosion + DEM editing)</title>
+  <title>Water Flow v13 (Burn severity + Smooth render + Erosion + DEM editing)</title>
   <link rel="stylesheet" href="./assets/maplibre-gl.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -326,8 +326,8 @@
   <div id="hud">
     <div class="hdr">
       <div class="title">
-        <div class="name">CA water runoff <span style="font-weight:400;font-size:11px;color:#9aa0a6;">v11 - smooth render</span></div>
-        <div class="sub">bilinear overlay &middot; color DEM &middot; erosion</div>
+        <div class="name">CA water runoff <span style="font-weight:400;font-size:11px;color:#9aa0a6;">v13 - burn severity</span></div>
+        <div class="sub">HPCC burn layer &middot; smooth overlay &middot; erosion</div>
       </div>
       <button class="collapseBtn" id="hudToggle" title="Collapse/expand controls" aria-label="Collapse/expand controls">&equiv;</button>
     </div>
@@ -487,8 +487,8 @@
           { id: 'base', type: 'raster', source: 'base', layout: { visibility: 'none' } }
         ]
       },
-      center: [-122.1997, 48.8139],
-      zoom: 14
+      center: [-105.39, 35.95],
+      zoom: 12
     });
 
     const overlayCanvas = document.getElementById('overlay');
@@ -496,6 +496,7 @@
     let showElevColor = false;
     let showWaterLayer = true;
     let showFALayer = false;
+    let showSBSLayer = false;
     let demHMin = 0, demHMax = 1;
     const errEl = document.getElementById('err');
     const demLoadingEl = document.getElementById('demLoading');
@@ -817,7 +818,7 @@
     const params = {
       run: true,
       flow: 0.4,
-      rain: 1.76,
+      rain: 0.80,
       rainAmp: 8.73,
       rainPeriod: 2324,
       evap: 0.008,
@@ -2197,11 +2198,11 @@
     function updateOverlayStyle() {
       const anyVis = showDemLayer || showWaterLayer || showFALayer || showSedLayer;
       overlayCanvas.style.display = anyVis ? '' : 'none';
-      // Elevation color needs normal blend so the saturated ramp colors
-      // render faithfully. Grayscale-only DEM also uses normal. Water-only
-      // (or FA/sed without DEM) uses screen so the heatmap glows over the
-      // basemap.
-      const useNormal = (showDemLayer && showElevColor) ||
+      // Normal blend when: elevation color is on, DEM-only is shown, or a
+      // colored map layer (SBS) is active underneath — screen blend lets the
+      // map content bleed through the overlay, corrupting the display.
+      const useNormal = showSBSLayer ||
+                        (showDemLayer && showElevColor) ||
                         (showDemLayer && !showWaterLayer && !showFALayer && !showSedLayer);
       overlayCanvas.style.mixBlendMode = useNormal ? 'normal' : 'screen';
     }
@@ -2291,6 +2292,8 @@
         map.setLayoutProperty('sbs-fill', 'visibility', vis);
         map.setLayoutProperty('sbs-outline', 'visibility', vis);
       }
+      showSBSLayer = on;
+      updateOverlayStyle();
       if (on) {
         map.fitBounds(SBS_BOUNDS, { padding: 40, duration: 1200 });
       }
