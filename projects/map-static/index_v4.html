@@ -608,6 +608,17 @@ const s = p => {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data || null);
       return tex;
     }
+    // Linear-filtered R32F for the height texture — bilinear interpolation between
+    // DEM samples so terrain gradients are smooth rather than block-stepping.
+    function makeR32FTexLinear(w, h, data) {
+      var tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, data || null);
+      return tex;
+    }
     function makeR8Tex(w, h, data) {
       var tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -642,7 +653,7 @@ const s = p => {
       if (brushTex) gl.deleteTexture(brushTex);
       if (faTex)    gl.deleteTexture(faTex);
       if (dirTex)   gl.deleteTexture(dirTex);
-      hTex     = makeR32FTex(n, n, null);
+      hTex     = makeR32FTexLinear(n, n, null);
       validTex = makeR8Tex(n, n, null);
       brushTex = makeR32FTex(n, n, new Float32Array(n * n));
       faTex    = makeR32FTex(n, n, new Float32Array(n * n));
@@ -654,7 +665,7 @@ const s = p => {
     }
 
     // ---- DEM fetching ----
-    var DEM_Z = 12;
+    var DEM_Z = 14;
     var DEM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
     var TILE = 256;
     var MOSAIC_W = 5, MOSAIC_H = 5;
